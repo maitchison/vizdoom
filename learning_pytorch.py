@@ -369,7 +369,7 @@ if __name__ == '__main__':
 
     # random sample from reasonable values.
     tests = []
-    for _ in range(100):
+    for _ in range(1000):
         test = {}
         test["learning_rate"] = np.random.choice(10**np.linspace(-2,-6,100))
         test["discount_factor"] = np.random.choice(1 - 10 ** np.linspace(-1, -3, 100))
