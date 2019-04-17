@@ -368,7 +368,17 @@ if __name__ == '__main__':
     memory = ReplayMemory(capacity=replay_memory_size)
 
     # random sample from reasonable values.
-    tests = [{'epochs':1}]
+    tests = []
+    for _ in range(100):
+        test = {}
+        test["learning_rate"] = np.random.choice(10**np.linspace(-2,-6,100))
+        test["discount_factor"] = np.random.choice(1 - 10 ** np.linspace(-1, -3, 100))
+        test["replay_memory_size"] = np.random.choice(10 ** np.linspace(2, 5, 100))
+        test["end_epsilon"] = np.random.choice(10 ** np.linspace(0, -3, 100))
+        test["batch_size"] = np.random.choice([16,32,64])
+        test["frame_repeat"] = np.random.choice(list(range(1,40)))
+
+        tests.append(test)
 
     for test_params in tests:
 
