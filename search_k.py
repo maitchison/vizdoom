@@ -17,6 +17,13 @@
 
 # a multi dimensional optimizer graph. bin the hyperparemters into 5 and graph the average of the best 5?
 
+
+"""
+Search for best update / experience ratio
+
+On Basic: (maybe this is too easy, but will give me an idea of learning speed...)
+"""
+
 """
 
 Try to learn navigation:
@@ -85,7 +92,7 @@ epochs = 10
 # Q-learning settings
 learning_rate = 0.0003
 discount_factor = 0.99
-learning_steps_per_epoch = 2000 # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
+learning_steps_per_epoch = 200 # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
 replay_memory_size = 10000
 end_epsilon = 0.02
 update_every = 1 # perform gradient descent every k steps.  The number of times each env sample is used is
@@ -95,7 +102,7 @@ update_every = 1 # perform gradient descent every k steps.  The number of times 
 batch_size = 32
 
 # Training regime
-test_episodes_per_epoch = 10
+test_episodes_per_epoch = 100
 
 # Other parameters
 frame_repeat = 12
@@ -109,6 +116,7 @@ skip_learning = False
 
 prev_loss = 0
 prev_max_q = 0
+bad_q = False
 
 # this is the lowest resolution we can go, and should be fine.
 screen_resolution = ScreenResolution.RES_160X120
@@ -117,8 +125,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device: {}".format(device))
 
 # Configuration file path
-config_file_path = "scenarios/my_way_home.cfg"
-#config_file_path = "scenarios/basic.cfg"
+config_file_path = "scenarios/basic.cfg"
 
 # Converts and down-samples the input image
 def preprocess(img):
@@ -206,13 +213,14 @@ def learn(s1, target_q):
 
 
 def get_q_values(state):
+    global bad_q
     state = torch.from_numpy(state)
     state = Variable(state)
     q = model(state)
     max_q = float(torch.max(q))
-    if max_q > 1000:
+    if max_q > 1000 and not bad_q:
         print("Error MaxQ = {}".format(max_q))
-        exit()
+        bad_q = True
     return q
 
 
@@ -286,8 +294,12 @@ def perform_learning_step(epoch, step):
     # Remember the transition that was just experienced.
     memory.add_transition(s1, a, s2, isterminal, reward)
 
-    if step % update_every == 0:
-        learn_from_memory()
+    if update_every < 1:
+        for i in range(int(1/update_every)):
+            learn_from_memory()
+    else:
+        if step % update_every == 0:
+            learn_from_memory()
 
 
 # Creates and initializes ViZDoom environment.
@@ -331,6 +343,9 @@ def run_test(**kwargs):
 
     time_start = time()
 
+    global bad_q
+    bad_q = False
+
     for epoch in range(epochs):
         print("\nEpoch {} (eps={:.3f})\n-------------".format(epoch + 1, exploration_rate(epoch)))
         train_episodes_finished = 0
@@ -372,11 +387,14 @@ def run_test(**kwargs):
                     best_action_index = get_best_action(state)
                 #print("step", step, "action", best_action_index, "state",state.shape,"max q", torch.max(get_q_values(state)))
                 reward = game.make_action(actions[best_action_index], frame_repeat)
-                if reward > 0:
+                if SHOW_REWARDS and reward > 0:
                     print("Reward! {} at step {}".format(reward, step))
 
             r = game.get_total_reward()
             test_scores.append(r)
+
+        if bad_q:
+            print("******* Warning MaxQ was too high ***************")
 
         test_scores = np.array(test_scores)
         print("\n\tResults: mean: %.1f +/- %.1f," % (
@@ -402,13 +420,14 @@ def save_results(results):
 
     # create an easy to read CVS file
 
-    if not os.path.isfile("results.csv"):
-        with open("results.csv", "w") as f:
-            f.write("learning_rate, discount_factor, replay_memory_size, end_epsilon, batch_size, frame_repeat, time (min), epochs\n")
+    if not os.path.isfile("results_k.csv"):
+        with open("results_k.csv", "w") as f:
+            f.write("learning_rate, update_every, discount_factor, replay_memory_size, end_epsilon, batch_size, frame_repeat, time (min), epochs\n")
 
-    with open("results.csv", "a") as f:
+    with open("results_k.csv", "a") as f:
         f.write(
             str(results["params"].get("learning_rate", learning_rate))+"," +
+            str(results["params"].get("update_every", learning_rate)) + "," +
             str(results["params"].get("discount_factor", discount_factor)) + "," +
             str(results["params"].get("replay_memory_size", replay_memory_size)) + "," +
             str(results["params"].get("end_epsilon", end_epsilon)) + "," +
@@ -420,11 +439,11 @@ def save_results(results):
 
     # save raw results to a pickle file for processing
     try:
-        db = pickle.load(open("results_mwh.dat","rb"))
+        db = pickle.load(open("results_k.dat","rb"))
     except FileNotFoundError:
         db = []
     db.append(results)
-    pickle.dump(db, open("results_mwh.dat","wb"))
+    pickle.dump(db, open("results_k.dat","wb"))
 
 if __name__ == '__main__':
 
@@ -443,26 +462,18 @@ if __name__ == '__main__':
     memory = ReplayMemory(capacity=replay_memory_size)
 
     # random sample from reasonable values.
-    tests = [{}] # start with default settings test.
-    """
-    for _ in range(1000):
-        test = {}        
-        test["learning_rate"] = np.random.choice(10**np.linspace(-2,-6,100))
-        test["discount_factor"] = np.random.choice(1 - 10 ** np.linspace(-1, -3, 100))
-        test["end_epsilon"] = np.random.choice(10 ** np.linspace(0, -3, 100))
-        test["batch_size"] = np.random.choice([16,32,64])
-        test["frame_repeat"] = np.random.choice(list(range(1,40)))        
-        tests.append(test)
-    """
+    #tests = [{}] # start with default settings test.
+    tests = []
+    for lr in [1e-3, 3e-4, 1e-4, 3e-5, 1e-5]:
+        for ue in [1/4, 1/2, 1, 2, 4]:
+            tests.append({"update_every": ue, "learning_rate":lr})
 
     for test_params in tests:
-
-        #try:
+        try:
             result = run_test(**test_params)
             save_results(result)
-        #except Exception as e:
-#            print("********** Test failed....")
- #           print("Params:",test_params)
-  #          print("error:", e)
-
+        except Exception as e:
+            print("********** Test failed....")
+            print("Params:",test_params)
+            print("error:", e)
     game.close()
