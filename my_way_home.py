@@ -20,23 +20,48 @@
 """
 
 Try to learn navigation:
-[ ] Start with very simple agent and get a baseline
-[ ] Make speed optimizations
+[*] Start with very simple agent and get a baseline (i.e. the default model)
+[*] Make basic speed optimizations
 [ ] Create an an agent with 3 layers and larger retina
 [ ] Add LSTM?
 [ ] Look for grid cells
 [ ] Try periodic LSTM
+[ ] Copy model from vector-based paper, see if grid-cells develop.
+
+Also
+[ ] create video replays to see what's happening
+[ ] look for other benchmarks on this map (looks like A2C gets ~100 after 10 million itterations.
 
 
-Peformance:
-Add 
+Performance:
 
 Speed numbers:
 Initial: 30-40 it/s
+No AA: 60 it/s
+
+This is still too slow... profile. (might be skip size?)
+Maybe run forward models on CPU? as they will be batch of 1? Ah... probably not, still to slow right? as model gets more
+complicated.  Alternatively run multiple threads collecting env steps
+
+try: multi core env?
+
+Wasn't there a paper about predicting the future but only the parts of the future that our actions influence
+
+The way home is interesting as rewards a very rare, so learning the dynamics of the system could help a lot!
+
+Turns out adam was unstable... maybe learning rate was just too high...
+
+Test:
+[*] switch to color
+[ ] make sure color works with basic
+[ ] switch on batch norm
+[ ] see if color helps way home (but train for 50 epochs...
+[ ]
 
 """
 
 from vizdoom import *
+import vizdoom as vzd
 import itertools as it
 from random import sample, randint, random
 from time import time, sleep
@@ -52,30 +77,38 @@ from tqdm import trange
 import pickle
 import os.path
 
-epochs = 20
+SHOW_REWARDS = False
+SHOW_MAXQ = False
+
+epochs = 10
 
 # Q-learning settings
-learning_rate = 0.00025
+learning_rate = 0.0003
 discount_factor = 0.99
-learning_steps_per_epoch = 2000
+learning_steps_per_epoch = 2000 # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
 replay_memory_size = 10000
-end_epsilon = 0.1
+end_epsilon = 0.02
+update_every = 1 # perform gradient descent every k steps.  The number of times each env sample is used is
+                 # batch_size / update_every.
 
 # NN learning settings
-batch_size = 64
+batch_size = 32
 
 # Training regime
-test_episodes_per_epoch = 100
+test_episodes_per_epoch = 10
 
 # Other parameters
-frame_repeat = 5
-resolution = (30, 45)
+frame_repeat = 12
+resolution = (84, 84)
 episodes_to_watch = 10
 
 model_savefile = "./model-doom.pth"
 save_model = False
 load_model = False
 skip_learning = False
+
+prev_loss = 0
+prev_max_q = 0
 
 # this is the lowest resolution we can go, and should be fine.
 screen_resolution = ScreenResolution.RES_160X120
@@ -84,22 +117,21 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device: {}".format(device))
 
 # Configuration file path
-config_file_path = "scenarios/my_way_home.cfg"
-
-
-# config_file_path = "../../scenarios/rocket_basic.cfg"
-# config_file_path = "../../scenarios/basic.cfg"
+#config_file_path = "scenarios/my_way_home.cfg"
+config_file_path = "scenarios/basic.cfg"
 
 # Converts and down-samples the input image
 def preprocess(img):
-    img = skimage.transform.resize(img, resolution)
+    img = np.swapaxes(img, 0, 2)
+    img = skimage.transform.resize(img, resolution, anti_aliasing=False)
+    img = np.swapaxes(img, 0, 2)
     img = img.astype(np.float32)
     return img
 
 
 class ReplayMemory:
     def __init__(self, capacity):
-        channels = 1
+        channels = 3
         state_shape = (capacity, channels, resolution[0], resolution[1])
         self.s1 = np.zeros(state_shape, dtype=np.float32)
         self.s2 = np.zeros(state_shape, dtype=np.float32)
@@ -112,10 +144,10 @@ class ReplayMemory:
         self.pos = 0
 
     def add_transition(self, s1, action, s2, isterminal, reward):
-        self.s1[self.pos, 0, :, :] = s1
+        self.s1[self.pos, :, :, :] = s1
         self.a[self.pos] = action
         if not isterminal:
-            self.s2[self.pos, 0, :, :] = s2
+            self.s2[self.pos, :, :, :] = s2
         self.isterminal[self.pos] = isterminal
         self.r[self.pos] = reward
 
@@ -127,44 +159,38 @@ class ReplayMemory:
         return self.s1[i], self.a[i], self.s2[i], self.isterminal[i], self.r[i]
 
 
+def prod(X):
+    y = 1
+    for x in X:
+        y *= x
+    return y
+
 class Net(nn.Module):
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 8, kernel_size=6, stride=3)
-        self.conv2 = nn.Conv2d(8, 8, kernel_size=3, stride=2)
-        self.fc1 = nn.Linear(192, 128)
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
+        self.conv1_bn = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv2_bn = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.conv3_bn = nn.BatchNorm2d(64)
+        self.fc1 = nn.Linear(prod([64,7,7]), 128)
         self.fc2 = nn.Linear(128, available_actions_count)
 
     def forward(self, x):
         x = x.to(device)
+        #x = F.relu(self.conv1_bn(self.conv1(x)))
+        #x = F.relu(self.conv2_bn(self.conv2(x)))
+        #x = F.relu(self.conv3_bn(self.conv3(x))) # we are now Bx64x7x7
+
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(-1, 192)
+        x = F.relu(self.conv3(x)) # we are now Bx64x7x7
+        x = x.view(-1, prod(x.shape[1:]))
         x = F.relu(self.fc1(x))
         return self.fc2(x).cpu()
-
-
-class __Net(nn.Module):
-    def __init__(self, available_actions_count):
-        super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=2)
-        self.fc1 = nn.Linear(64*2*4, 128)
-        self.fc2 = nn.Linear(128, available_actions_count)
-
-    def forward(self, x):
-        x = x.to(device)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.view(-1, 64*2*4)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x).cpu()
-
 
 criterion = nn.MSELoss()
-
 
 def learn(s1, target_q):
     s1 = torch.from_numpy(s1)
@@ -182,7 +208,12 @@ def learn(s1, target_q):
 def get_q_values(state):
     state = torch.from_numpy(state)
     state = Variable(state)
-    return model(state)
+    q = model(state)
+    max_q = float(torch.max(q))
+    if max_q > 1000:
+        print("Error MaxQ = {}".format(max_q))
+        exit()
+    return q
 
 
 def get_best_action(state):
@@ -206,28 +237,31 @@ def learn_from_memory():
         # target differs from q only for the selected action. The following means:
         # target_Q(s,a) = r + gamma * max Q(s2,_) if isterminal else r
         target_q[np.arange(target_q.shape[0]), a] = r + discount_factor * (1 - isterminal) * q2
-        learn(s1, target_q)
+        this_loss = learn(s1, target_q)
+        global prev_loss
+        prev_loss = 0.95 * prev_loss + 0.05 * float(this_loss)
+
+def exploration_rate(epoch):
+    """# Define exploration rate change over time"""
+    start_eps = 0.5
+    end_eps = end_epsilon
+    const_eps_epochs = 0
+    eps_decay_epochs = min(0.5 * epochs, 10)
+
+    if epoch < const_eps_epochs:
+        return start_eps
+    elif epoch < eps_decay_epochs:
+        # Linear decay
+        return start_eps - (epoch - const_eps_epochs) / \
+               (eps_decay_epochs - const_eps_epochs) * (start_eps - end_eps)
+    else:
+        return end_eps
 
 
-def perform_learning_step(epoch):
+def perform_learning_step(epoch, step):
     """ Makes an action according to eps-greedy policy, observes the result
     (next state, reward) and learns from the transition"""
 
-    def exploration_rate(epoch):
-        """# Define exploration rate change over time"""
-        start_eps = 1.0
-        end_eps = end_epsilon
-        const_eps_epochs = 0.1 * epochs  # 10% of learning time
-        eps_decay_epochs = 0.6 * epochs  # 60% of learning time
-
-        if epoch < const_eps_epochs:
-            return start_eps
-        elif epoch < eps_decay_epochs:
-            # Linear decay
-            return start_eps - (epoch - const_eps_epochs) / \
-                   (eps_decay_epochs - const_eps_epochs) * (start_eps - end_eps)
-        else:
-            return end_eps
 
     s1 = preprocess(game.get_state().screen_buffer)
 
@@ -237,9 +271,14 @@ def perform_learning_step(epoch):
         a = randint(0, len(actions) - 1)
     else:
         # Choose the best action according to the network.
-        s1 = s1.reshape([1, 1, resolution[0], resolution[1]])
+        s1 = s1.reshape([1, 3, resolution[0], resolution[1]])
         a = get_best_action(s1)
+        global prev_max_q
+        prev_max_q = float(torch.max(get_q_values(s1)))
+
     reward = game.make_action(actions[a], frame_repeat)
+    if SHOW_REWARDS and reward > 0:
+        print("Reward {} at step {}".format(reward, step))
 
     isterminal = game.is_episode_finished()
     s2 = preprocess(game.get_state().screen_buffer) if not isterminal else None
@@ -247,7 +286,8 @@ def perform_learning_step(epoch):
     # Remember the transition that was just experienced.
     memory.add_transition(s1, a, s2, isterminal, reward)
 
-    learn_from_memory()
+    if step % update_every == 0:
+        learn_from_memory()
 
 
 # Creates and initializes ViZDoom environment.
@@ -257,7 +297,7 @@ def initialize_vizdoom(config_file_path):
     game.load_config(config_file_path)
     game.set_window_visible(False)
     game.set_mode(Mode.PLAYER)
-    game.set_screen_format(ScreenFormat.GRAY8)
+    game.set_screen_format(vzd.ScreenFormat.CRCGCB)
     game.set_screen_resolution(screen_resolution)
     game.init()
     print("Doom initialized.")
@@ -280,8 +320,10 @@ def run_test(**kwargs):
     if device.lower() == "cuda":
         model.cuda()
 
+    print("Actions:",actions)
+
     global optimizer
-    optimizer = torch.optim.SGD(model.parameters(), learning_rate)
+    optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
 
     print("-"*60)
     print("Parameters ",kwargs)
@@ -290,14 +332,17 @@ def run_test(**kwargs):
     time_start = time()
 
     for epoch in range(epochs):
-        print("\nEpoch %d\n-------" % (epoch + 1))
+        print("\nEpoch {} (eps={:.3f})\n-------------".format(epoch + 1, exploration_rate(epoch)))
         train_episodes_finished = 0
         train_scores = []
 
         print("Training...")
+        model.train()
         game.new_episode()
         for learning_step in trange(learning_steps_per_epoch, leave=False):
-            perform_learning_step(epoch)
+            if SHOW_MAXQ and learning_step % 1000 == 0:
+                print("maxq: {:.2f} loss: {:.5f}".format(prev_max_q, float(prev_loss)))
+            perform_learning_step(epoch, learning_step)
             if game.is_episode_finished():
                 score = game.get_total_reward()
                 train_scores.append(score)
@@ -312,16 +357,24 @@ def run_test(**kwargs):
               "min: %.1f," % train_scores.min(), "max: %.1f," % train_scores.max())
 
         print("\nTesting...")
-        test_episode = []
+        model.eval()
         test_scores = []
         for test_episode in trange(test_episodes_per_epoch, leave=False):
             game.new_episode()
+            step = 0
             while not game.is_episode_finished():
+                step += 1
                 state = preprocess(game.get_state().screen_buffer)
-                state = state.reshape([1, 1, resolution[0], resolution[1]])
-                best_action_index = get_best_action(state)
+                state = state.reshape([1, 3, resolution[0], resolution[1]])
+                if random() < 0:
+                    best_action_index = randint(0, len(actions) - 1)
+                else:
+                    best_action_index = get_best_action(state)
+                #print("step", step, "action", best_action_index, "state",state.shape,"max q", torch.max(get_q_values(state)))
+                reward = game.make_action(actions[best_action_index], frame_repeat)
+                if reward > 0:
+                    print("Reward! {} at step {}".format(reward, step))
 
-                game.make_action(actions[best_action_index], frame_repeat)
             r = game.get_total_reward()
             test_scores.append(r)
 
@@ -367,13 +420,18 @@ def save_results(results):
 
     # save raw results to a pickle file for processing
     try:
-        db = pickle.load(open("results.dat","rb"))
+        db = pickle.load(open("results_mwh.dat","rb"))
     except FileNotFoundError:
         db = []
     db.append(results)
-    pickle.dump(db, open("results.dat","wb"))
+    pickle.dump(db, open("results_mwh.dat","wb"))
 
 if __name__ == '__main__':
+
+    # this doesn't hurt performance much and leaves other CPUs avalaible for more workers.
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+
     # Create Doom instance
     game = initialize_vizdoom(config_file_path)
 
@@ -385,26 +443,26 @@ if __name__ == '__main__':
     memory = ReplayMemory(capacity=replay_memory_size)
 
     # random sample from reasonable values.
-    tests = []
+    tests = [{}] # start with default settings test.
+    """
     for _ in range(1000):
-        test = {}
+        test = {}        
         test["learning_rate"] = np.random.choice(10**np.linspace(-2,-6,100))
         test["discount_factor"] = np.random.choice(1 - 10 ** np.linspace(-1, -3, 100))
-        test["replay_memory_size"] = np.random.choice(10 ** np.linspace(2, 5, 100))
         test["end_epsilon"] = np.random.choice(10 ** np.linspace(0, -3, 100))
         test["batch_size"] = np.random.choice([16,32,64])
-        test["frame_repeat"] = np.random.choice(list(range(1,40)))
-
+        test["frame_repeat"] = np.random.choice(list(range(1,40)))        
         tests.append(test)
+    """
 
     for test_params in tests:
 
-        try:
+        #try:
             result = run_test(**test_params)
             save_results(result)
-        except Exception as e:
-            print("********** Test failed....")
-            print("Params:",test_params)
-            print("error:", e)
+        #except Exception as e:
+#            print("********** Test failed....")
+ #           print("Params:",test_params)
+  #          print("error:", e)
 
     game.close()
