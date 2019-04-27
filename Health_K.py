@@ -31,6 +31,11 @@ What I've tried
 [ ] add batch norm? hmm... changes model a lot
 
 
+Things to make it faster
+[ ] batch norm (converge faster)
+[ ] faster resize
+[ ] multi thread preprocessing or something? (better to just run agents in parallel
+
 """
 
 import vizdoom as vzd
@@ -59,7 +64,7 @@ run_name = "results_health_k"
 SHOW_REWARDS = False
 SHOW_MAXQ = False
 
-epochs = 20
+epochs = 200
 
 # --------------------------------------------------------
 # Hyper-parameters
@@ -68,7 +73,7 @@ epochs = 20
 # Q-learning settings
 learning_rate = 0.00001         # maybe this is too slow! ? oh right... rewards very high i.e. 100 in this one.
 discount_factor = 1
-learning_steps_per_epoch = 500  # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
+learning_steps_per_epoch = 5000  # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
 replay_memory_size = 10000
 
 end_eps = 0.1
@@ -82,10 +87,10 @@ update_every = 1
 batch_size = 64
 
 # Training regime
-test_episodes_per_epoch = 20
+test_episodes_per_epoch = 200
 
-target_update = 1000            # 10k was DQN paper
-first_update_step = 500        # make sure we have some experience before we start making updates.
+target_update = 10000           # 10k was DQN paper
+first_update_step = 1000        # make sure we have some experience before we start making updates.
 
 # Other parameters
 frame_repeat = 10
@@ -342,7 +347,7 @@ def run_test(**kwargs):
         train_scores = []
 
         print("Training...")
-        model.train()
+        policy_model.train()
         game.new_episode()
         for learning_step in trange(learning_steps_per_epoch, leave=False):
 
@@ -365,7 +370,7 @@ def run_test(**kwargs):
               "min: %.1f," % train_scores.min(), "max: %.1f," % train_scores.max())
 
         print("\nTesting...")
-        model.eval()
+        policy_model.eval()
         test_scores = []
         for test_episode in trange(test_episodes_per_epoch, leave=False):
             game.new_episode()
@@ -465,7 +470,8 @@ def test_exploration_rate():
 
 def run_original():
     """ Run the agent from the original paper."""
-    run_test()
+    result = run_test()
+    save_results(result)
 
 def run_test_suite():
     """ Runs tests at various levels update frequency. """
@@ -490,8 +496,8 @@ def run_test_suite():
 if __name__ == '__main__':
 
     # this doesn't hurt performance much and leaves other CPUs available for more workers.
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '2'
+    os.environ['MKL_NUM_THREADS'] = '2'
 
     # Create Doom instance
     game = initialize_vizdoom(config_file_path)
