@@ -30,12 +30,17 @@ What I've tried
     (yes this worked)
 [ ] add batch norm? hmm... changes model a lot
 
+Things to get stuff working
+[ ] Try 1k model updates
+
+... owch... maxQ again...
 
 Things to make it faster
-[ ] batch norm (converge faster)
-[ ] faster resize
-[ ] multi thread preprocessing or something? (better to just run agents in parallel
+[...] batch norm (converge faster)
 
+
+# this paper has some hyper paramaters too http://cs229.stanford.edu/proj2017/final-reports/5238810.pdf
+# keras implementation of some maps. https://github.com/flyyufelix/VizDoom-Keras-RL
 """
 
 import vizdoom as vzd
@@ -54,6 +59,9 @@ from tqdm import trange
 import pickle
 import matplotlib.pyplot as plt
 import os.path
+import cv2
+import uuid
+import sys
 
 # --------------------------------------------------------
 # Debug settings
@@ -63,17 +71,23 @@ run_name = "results_health_k"
 
 SHOW_REWARDS = False
 SHOW_MAXQ = False
+show_model_updates = False
+show_first_frame = False
 
-epochs = 200
 
 # --------------------------------------------------------
-# Hyper-parameters
+# Main one
 # --------------------------------------------------------
+
+learn_factor = 1
+
+epochs = 200//learn_factor
 
 # Q-learning settings
 learning_rate = 0.00001         # maybe this is too slow! ? oh right... rewards very high i.e. 100 in this one.
+                                # (default 00001)
 discount_factor = 1
-learning_steps_per_epoch = 5000  # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
+learning_steps_per_epoch = 5000//learn_factor  # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
 replay_memory_size = 10000
 
 end_eps = 0.1
@@ -87,19 +101,65 @@ update_every = 1
 batch_size = 64
 
 # Training regime
-test_episodes_per_epoch = 200
+test_episodes_per_epoch = 200//learn_factor
 
-target_update = 10000           # 10k was DQN paper
-first_update_step = 1000        # make sure we have some experience before we start making updates.
+target_update = 1000//learn_factor           # 10k was DQN paper
+first_update_step = 1000//learn_factor        # make sure we have some experience before we start making updates.
 
 # Other parameters
 frame_repeat = 10
 resolution = (120, 45)
-episodes_to_watch = 10
+
+# Configuration file path
+config_file_path = "scenarios/health_gathering_supreme.cfg"
+
+# --------------------------------------------------------
+
+"""
+
+
+# --------------------------------------------------------
+# Basic Test
+# --------------------------------------------------------
+
+epochs = 10
+
+# Q-learning settings
+learning_rate = 0.0003         # maybe this is too slow! ? oh right... rewards very high i.e. 100 in this one.
+discount_factor = 1
+learning_steps_per_epoch = 1000  # we probably want 10 million steps, let's make an epoch a 100,000 steps, so 100 epochs
+replay_memory_size = 10000
+
+end_eps = 0.1
+start_eps = 1.0
+start_eps_decay = 0
+end_eps_decay = 4000
+
+hidden_units = 128
+
+update_every = 1
+batch_size = 64
+
+# Training regime
+test_episodes_per_epoch = 50
+
+target_update = 500             # 10k was DQN paper
+first_update_step = 500        # make sure we have some experience before we start making updates.
+
+# Other parameters
+frame_repeat = 10
+resolution = (120, 45)
+
+# Configuration file path
+config_file_path = "scenarios/basic.cfg"
+
+# --------------------------------------------------------
+"""
 
 prev_loss = 0
 prev_max_q = 0
 max_q = 0
+last_total_shaping_reward = 0
 
 # this is the lowest resolution we can go, and should be fine.
 screen_resolution = vzd.ScreenResolution.RES_160X120
@@ -107,17 +167,38 @@ screen_resolution = vzd.ScreenResolution.RES_160X120
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device: {}".format(device))
 
-# Configuration file path
-config_file_path = "scenarios/health_gathering.cfg"
 
 # Converts and down-samples the input image
 def preprocess(img):
     # note: this is quite slow, might switch to another method of resizing?
+
+    original_img = img
+
+    """
     img = np.swapaxes(img, 0, 2)
-    img = skimage.transform.resize(img, resolution, anti_aliasing=False)
+    img = skimage.transform.resize(img, resolution, anti_aliasing=False, order=0)
     img = np.swapaxes(img, 0, 2)
     img = np.swapaxes(img, 1, 2)
     img = img.astype(np.float32)
+    """
+
+    img = np.swapaxes(img, 0, 2)
+    img = cv2.resize(np.float32(img)/255, dsize=resolution[::-1], interpolation=cv2.INTER_LINEAR)
+    img = np.swapaxes(img, 0, 2)
+    img = np.swapaxes(img, 1, 2)
+
+    global show_first_frame
+    if show_first_frame:
+        print("original input shape:", original_img.shape)
+        original_img = np.swapaxes(original_img, 0, 2)
+        original_img = np.swapaxes(original_img, 0, 1)
+        print("preprocessed shape:",img.shape)
+        plt.imshow(original_img)
+        plt.show()
+        plt.imshow(np.swapaxes(img,0,2))
+        plt.show()
+        show_first_frame = False
+
     return img
 
 
@@ -161,8 +242,11 @@ class Net(nn.Module):
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(3, 32, kernel_size=7, stride=4) #3 color channels, 4 previous frames.
+        self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
+        self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1)
+        self.bn3 = nn.BatchNorm2d(32)
         self.fc1 = nn.Linear(prod([32,11,1]), hidden_units)
         self.fc2 = nn.Linear(hidden_units, available_actions_count)
 
@@ -188,7 +272,8 @@ def learn(s1, target_q):
     loss = criterion(output, target_q)
     loss.backward()
     for param in policy_model.parameters(): #clamp gradients...
-        param.grad.data.clamp_(-1, 1)
+        if param.grad is not None:
+            param.grad.data.clamp_(-1, 1)
     optimizer.step()
     return loss
 
@@ -266,9 +351,23 @@ def perform_learning_step(step):
         global prev_max_q
         prev_max_q = float(torch.max(get_q_values(s1)))
 
+    global last_total_shaping_reward
+
     reward = game.make_action(actions[a], frame_repeat)
-    if SHOW_REWARDS and reward > 0:
-        print("Reward {} at step {}".format(reward, step))
+
+    # Retrieve the shaping reward
+    fixed_shaping_reward = game.get_game_variable(vzd.GameVariable.USER1)  # Get value of scripted variable
+    shaping_reward = vzd.doom_fixed_to_double(fixed_shaping_reward)  # If value is in DoomFixed format project it to double
+    shaping_reward = shaping_reward - last_total_shaping_reward
+    last_total_shaping_reward += shaping_reward
+
+    reward += shaping_reward
+
+
+    #if SHOW_REWARDS and reward > 0:
+    #   print("Reward {} at step {}".format(reward, step))
+    if SHOW_REWARDS and shaping_reward != 0:
+        print("Shaping reward of {}".format(shaping_reward))
 
     isterminal = game.is_episode_finished()
     s2 = preprocess(game.get_state().screen_buffer) if not isterminal else None
@@ -276,8 +375,10 @@ def perform_learning_step(step):
     # Remember the transition that was just experienced.
     memory.add_transition(s1, a, s2, isterminal, reward)
 
-    # updaste target net every so often.
+    # update target net every so often.
     if step % target_update == 0:
+        if show_model_updates:
+            print("Model update.")
         target_model.load_state_dict(policy_model.state_dict())
 
     if step >= first_update_step:
@@ -329,13 +430,15 @@ def run_test(**kwargs):
     print("Actions:",actions)
 
     global optimizer
-    optimizer = torch.optim.RMSprop(policy_model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(policy_model.parameters(), lr=learning_rate)
 
     print("-"*60)
     print("Parameters ",kwargs)
     print("-" * 60)
 
     time_start = time()
+
+    global last_total_shaping_reward
 
     for epoch in range(epochs):
 
@@ -348,15 +451,18 @@ def run_test(**kwargs):
 
         print("Training...")
         policy_model.train()
+        target_model.train()
         game.new_episode()
+        last_total_shaping_reward = 0
         for learning_step in trange(learning_steps_per_epoch, leave=False):
 
             step = learning_step  + epoch*learning_steps_per_epoch
 
-            if SHOW_MAXQ and learning_step % 1000 == 0:
+            if SHOW_MAXQ and learning_step % 10000 == 0:
                 print("maxq: {:.2f} loss: {:.5f}".format(prev_max_q, float(prev_loss)))
             perform_learning_step(step)
             if game.is_episode_finished():
+                last_total_shaping_reward = 0
                 score = game.get_total_reward()
                 train_scores.append(score)
                 game.new_episode()
@@ -371,6 +477,7 @@ def run_test(**kwargs):
 
         print("\nTesting...")
         policy_model.eval()
+        target_model.eval()
         test_scores = []
         for test_episode in trange(test_episodes_per_epoch, leave=False):
             game.new_episode()
@@ -391,12 +498,14 @@ def run_test(**kwargs):
             r = game.get_total_reward()
             test_scores.append(r)
 
-        if max_q > 1000:
+        if max_q > 10000:
             print()
             print("******* Warning MaxQ was too high ***************")
             print("MaxQ:",max_q)
             print("*************************************************")
             print()
+        else:
+            print("\n\tMaxQ:", max_q)
 
         test_scores = np.array(test_scores)
         print("\n\tResults: mean: %.1f +/- %.1f," % (
@@ -427,12 +536,27 @@ def run_test(**kwargs):
 
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
+        save_partial_results(results)
+
     return results
+
+def save_partial_results(results):
+
+    # save raw results to a pickle file for processing
+    try:
+        db = pickle.load(open(run_name + "_partial.dat", "rb"))
+    except FileNotFoundError:
+        db = []
+    db.append(results)
+    pickle.dump(db, open(run_name + "_partial.dat", "wb"))
+
+    # save the model
+    print("Saving the network weigths.")
+    torch.save(target_model, run_name + "_model.dat")
 
 def save_results(results):
 
     # create an easy to read CVS file
-
     if not os.path.isfile(run_name+".csv"):
         with open(run_name+".csv", "w") as f:
             f.write("learning_rate, update_every, discount_factor, replay_memory_size, end_epsilon, batch_size, frame_repeat, time (min), epochs\n")
@@ -468,9 +592,9 @@ def test_exploration_rate():
     plt.plot(xs, ys)
     plt.show()
 
-def run_original():
+def run_original(**kwargs):
     """ Run the agent from the original paper."""
-    result = run_test()
+    result = run_test(**kwargs)
     save_results(result)
 
 def run_test_suite():
@@ -496,8 +620,20 @@ def run_test_suite():
 if __name__ == '__main__':
 
     # this doesn't hurt performance much and leaves other CPUs available for more workers.
-    os.environ['OPENBLAS_NUM_THREADS'] = '2'
-    os.environ['MKL_NUM_THREADS'] = '2'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+
+    params = {}
+    if len(sys.argv) > 1:
+        # apply parameters
+        for param in sys.argv[1:]:
+            k,v = param.split("=")
+            params[k] = float(v)
+
+    # add unique ID to run name
+    run_name = run_name + " ["+uuid.uuid4().hex[:8]+"]"
+
+    print("Run:", run_name)
 
     # Create Doom instance
     game = initialize_vizdoom(config_file_path)
@@ -509,6 +645,6 @@ if __name__ == '__main__':
     # Create replay memory which will store the transitions
     memory = ReplayMemory(capacity=replay_memory_size)
 
-    run_original()
+    run_original(**params)
 
     game.close()
