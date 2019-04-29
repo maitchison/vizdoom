@@ -38,6 +38,7 @@ import sys
 import argparse
 import shutil
 import logging
+import platform
 
 # --------------------------------------------------------
 # Debug settings
@@ -53,7 +54,6 @@ SHOW_FIRST_FRAME = False
 
 time_stats = {}
 prev_loss = 0
-prev_max_q = 0
 max_q = 0
 last_total_shaping_reward = 0
 
@@ -62,6 +62,100 @@ last_total_shaping_reward = 0
 # this is the lowest resolution we can go, and should be fine.
 screen_resolution = vzd.ScreenResolution.RES_160X120
 
+class Config:
+
+    def __init__(self):
+        self.mode = "train"
+        self.num_stacks = 1
+        self.num_channels = 3   # 3 channels for color
+        self.epochs = 40
+        self.learning_rate = 0.00001
+        self.discount_factor = 1
+        self.learning_steps_per_epoch = 1000
+        self.test_episodes_per_epoch = 20
+        self.replay_memory_size = 10000
+        self.end_eps = 0.1
+        self.start_eps = 1.0
+        self.hidden_units = 1024
+        self.update_every = 1
+        self.batch_size = 64
+        self.target_update = 1000
+        self.first_update_step = 1000
+        self.frame_repeat = 10
+        self.resolution = (120, 45)
+        self.verbose = False
+        self.config_file_path = "scenarios/health_gathering.cfg"
+        self.uid = uuid.uuid4().hex
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.experiment = "experiments"
+        self.computer_specs = platform.uname()
+        self.hostname = platform.node()
+
+    def apply_args(self, args):
+        """
+        apply args to config
+        :param args: argparse arguments
+        :return: none
+        """
+
+        for k,v in args.__dict__.items():
+            if v is not None:
+                setattr(self, k, v)
+
+        self.mode = self.mode.lower()
+        self.args = args
+
+    @property
+    def job_folder(self):
+        return os.path.join("runs", "running", self.job_subfolder)
+
+    @property
+    def final_job_folder(self):
+        return os.path.join("runs",self.experiment,self.job_subfolder)
+
+    @property
+    def job_subfolder(self):
+        if self.mode == "benchmark":
+            return os.path.join("benchmarks",self.job_id)
+        elif self.mode == "test":
+            return os.path.join("tests", self.job_id)
+        else:
+            return "{} [{}]".format(self.job_name, self.job_id)
+
+    @property
+    def job_id(self):
+        return self.uid[:16]
+
+    @property
+    def scenario(self):
+        return os.path.splitext(os.path.basename(self.config_file_path))[0]
+
+    @property
+    def job_name(self):
+        """ Describes the job's parameters. """
+        params = sorted([(k,v) for k,v in self.args.__dict__.items() if k not in ["mode"] and v is not None])
+        args_string = " ".join("{}={}".format(k,v) for k, v in params)
+        return args_string
+
+    @property
+    def start_eps_decay(self):
+        return self.total_steps * 0.1
+
+    @property
+    def end_eps_decay(self):
+        return self.total_steps * 0.6
+
+    @property
+    def total_steps(self):
+        return self.epochs * self.learning_steps_per_epoch
+
+    def make_job_folder(self):
+        """create the job folder"""
+        os.makedirs(self.job_folder, exist_ok=True)
+
+    def move_job_folder(self):
+        """ moves job to completed folder. """
+        shutil.move(self.job_folder, self.final_job_folder)
 
 def track_time_taken(method):
 
@@ -206,7 +300,9 @@ def get_target_q_values(state):
     return q
 
 def get_best_action(state):
-    q = get_q_values(state)
+    state = torch.from_numpy(state)
+    state = Variable(state)
+    q = policy_model(state).detach()
     m, index = torch.max(q, 1)
     action = index.data.numpy()[0]
     return action
@@ -262,14 +358,11 @@ def perform_learning_step(step):
 
     # With probability eps make a random action.
     eps = exploration_rate(step)
+
     if random() <= eps:
         a = randint(0, len(actions) - 1)
     else:
-        # Choose the best action according to the network.
-        s1 = s1.reshape([1, config.num_channels * config.num_stacks, config.resolution[0], config.resolution[1]])
-        a = get_best_action(s1)
-        global prev_max_q
-        prev_max_q = float(torch.max(get_q_values(s1)))
+        a = get_best_action(s1[np.newaxis, :, :, :])
 
     global last_total_shaping_reward
 
@@ -316,16 +409,17 @@ def update_target():
 
 def tidy_args(args):
     result = {}
-    for k,v in args.__dict__:
+    for k,v in args.__dict__.items():
         if v is not None:
             result[k] = v
     return result
+
 
 def train_agent():
     """ Run a test with given parameters, returns stats in dictionary. """
 
     logging.critical("=" * 60)
-    logging.critical("Running Experiment {}".format(config.experiment_name))
+    logging.critical("Running Experiment {} {} [{}]".format(config.experiment, config.job_name, config.job_id))
     logging.critical("=" * 60)
 
     global game
@@ -393,18 +487,20 @@ def train_agent():
         global max_q
         max_q = 0
 
-        logging.critical("------------- Epoch {} (eps={:.3f}) -------------".format(epoch + 1, exploration_rate(epoch*config.learning_steps_per_epoch)))
+        logging.critical("------------- Epoch {}/{} (eps={:.3f}) -------------".format(
+            epoch + 1, config.epochs,
+            exploration_rate(epoch*config.learning_steps_per_epoch))
+        )
         train_episodes_finished = 0
         train_scores = []
 
         logging.info("Training...")
         policy_model.train()
-        target_model.train()
         game.new_episode()
         last_total_shaping_reward = 0
         for learning_step in trange(config.learning_steps_per_epoch, leave=False):
 
-            step = learning_step  + epoch*config.learning_steps_per_epoch
+            step = learning_step + epoch*config.learning_steps_per_epoch
 
             perform_learning_step(step)
 
@@ -417,7 +513,7 @@ def train_agent():
                     for i in range(int(1 / config.update_every)):
                         learn_from_memory()
                 else:
-                    if step % config.update_every == 0:
+                    if step % int(config.update_every) == 0:
                         learn_from_memory()
 
             if game.is_episode_finished():
@@ -442,7 +538,6 @@ def train_agent():
 
         logging.info("Testing...")
         policy_model.eval()
-        target_model.eval()
         test_scores = []
         for test_episode in trange(config.test_episodes_per_epoch, leave=False):
             game.new_episode()
@@ -499,8 +594,10 @@ def train_agent():
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
         save_results(results,"_partial")
+        save_model("_{0:03d}".format(epoch+1), "models")
 
     save_results(results, "_complete")
+    save_model("_complete")
 
     game.close()
 
@@ -509,9 +606,17 @@ def train_agent():
 def save_results(results, suffix=""):
     # save raw results to a pickle file for processing
     pickle.dump(results, open(os.path.join(config.job_folder, "results"+suffix+".dat"), "wb"))
+    with open(os.path.join(config.job_folder, "results"+suffix+".txt"), "w") as f:
+        f.write(str(results["test_scores_mean"]))
+    generate_graphs(results)
+
+
+def save_model(suffix="", subfolder=""):
     # save the model
-    torch.save(target_model, os.path.join(config.job_folder, "model+"+suffix+".dat"))
-    # todo: generate some nice plots :)
+    if subfolder != "":
+        os.makedirs(os.path.join(config.job_folder, subfolder), exist_ok=True)
+    torch.save(target_model, os.path.join(config.job_folder, subfolder, "model"+suffix+".dat"))
+
 
 def run_training():
     """ Runs an experiment with given parameters. """
@@ -595,74 +700,22 @@ def run_simple_test(args):
         print("Test failed!")
         exit(-1)
 
-class Config:
+def generate_graphs(data):
+    """ Generates graph from results file. """
 
-    def __init__(self):
-        self.mode = "train"
-        self.num_stacks = 1
-        self.num_channels = 3   # 3 channels for color
-        self.epochs = 100
-        self.learning_rate = 0.00001
-        self.discount_factor = 1
-        self.learning_steps_per_epoch = 5000
-        self.test_episodes_per_epoch = 200
-        self.replay_memory_size = 10000
-        self.end_eps = 0.1
-        self.start_eps = 1.0
-        self.hidden_units = 1024
-        self.update_every = 1
-        self.batch_size = 64
-        self.target_update = 1000
-        self.first_update_step = 1000
-        self.frame_repeat = 10
-        self.resolution = (120, 45)
-        self.verbose = False
-        self.config_file_path = "scenarios/health_gathering.cfg"
-        self.uid = uuid.uuid4().hex
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+    ys = np.mean(data["test_scores"], axis=1)
+    xs = range(len(ys))
+    plt.plot(xs, ys, label="mean")
 
-    def apply_args(self, args):
-        """
-        apply args to config
-        :param args: argparse arguments
-        :return: none
-        """
+    ys = np.max(data["test_scores"], axis=1)
+    xs = range(len(ys))
+    plt.plot(xs, ys, label="max")
 
-        for k,v in args.__dict__.items():
-            if v is not None:
-                setattr(self, k, v)
+    ys = np.min(data["test_scores"], axis=1)
+    xs = range(len(ys))
+    plt.plot(xs, ys, label="min")
 
-        self.mode = self.mode.lower()
-        self.args = args
-
-    @property
-    def job_folder(self):
-        return os.path.join("experiments",self.job_code)
-
-    @property
-    def job_code(self):
-        return self.uid[:16]
-
-    @property
-    def experiment_name(self):
-        return "{} [{}]".format(os.path.basename(self.config_file_path), self.job_code)
-
-    @property
-    def start_eps_decay(self):
-        return self.total_steps * 0.1
-
-    @property
-    def end_eps_decay(self):
-        return self.total_steps * 0.6
-
-    @property
-    def total_steps(self):
-        return self.epochs * self.learning_steps_per_epoch
-
-    def make_job_folder(self):
-        """create the job folder"""
-        os.makedirs(self.job_folder, exist_ok=True)
-
+    plt.savefig(os.path.join(config.job_folder, "training.png"))
 
 if __name__ == '__main__':
 
@@ -681,6 +734,9 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, help='Samples per minibatch.')
     parser.add_argument('--device', type=str, help='CPU | CUDA')
     parser.add_argument('--verbose', type=bool, help='enable verbose output')
+    parser.add_argument('--update_every', type=float, help='apply update every x steps')
+    parser.add_argument('--experiment', type=str, help='name of subfolder to put experiment in.')
+    parser.add_argument('--target_update', type=int, help='how often to update target network')
 
     args = parser.parse_args()
 
