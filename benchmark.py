@@ -32,7 +32,7 @@ from torch.autograd import Variable
 from tqdm import trange
 import pickle
 import os.path
-
+import matplotlib.pyplot as plt
 
 epochs = 20
 
@@ -50,7 +50,7 @@ batch_size = 64
 test_episodes_per_epoch = 100
 
 # Other parameters
-frame_repeat = 5
+frame_repeat = 10
 resolution = (30, 45)
 episodes_to_watch = 10
 
@@ -59,15 +59,21 @@ save_model = False
 load_model = False
 skip_learning = False
 
-screen_resolution = ScreenResolution.RES_640X480
+#screen_resolution = ScreenResolution.RES_640X480
 #screen_resolution = ScreenResolution.RES_320X240
-#screen_resolution = ScreenResolution.RES_160X120 # this is the lowest resolution we can go
+screen_resolution = ScreenResolution.RES_160X120 # this is the lowest resolution we can go
+
+#screen_format = ScreenFormat.GRAY8
+screen_format = ScreenFormat.CRCGCB
+#screen_format = ScreenFormat.RGB24
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device: {}".format(device))
 
 # Configuration file path
-config_file_path = "scenarios/simpler_basic.cfg"
+#config_file_path = "scenarios/simpler_basic.cfg"
+config_file_path = "scenarios/health_gathering.cfg"
+#config_file_path = "scenarios/health_gathering_supreme.cfg"
 
 
 # config_file_path = "../../scenarios/rocket_basic.cfg"
@@ -203,7 +209,7 @@ def initialize_vizdoom(config_file_path):
     game.load_config(config_file_path)
     game.set_window_visible(False)
     game.set_mode(Mode.PLAYER)
-    game.set_screen_format(ScreenFormat.GRAY8)
+    game.set_screen_format(screen_format)
     game.set_screen_resolution(screen_resolution)
     game.init()
     print("Doom initialized.")
@@ -218,16 +224,39 @@ def run_benchmark():
     time_start = time()
     test_iterations = 5000
 
+    times = []
+
     game.new_episode()
     for i in range(test_iterations):
-        _ = game.get_state().screen_buffer
+        x = game.get_state().screen_buffer
+
         a = randint(0, len(actions) - 1)
-        game.make_action(actions[a], 1)
+
+        st = time()
+
+        _ = game.make_action(actions[a], 100)
+
+        times.append(time()-st)
+
         if game.is_episode_finished():
             game.new_episode()
 
-    print("Environment runs at {:.1f} FPS".format(test_iterations / (time()-time_start)))
+    avg_time = (time()-time_start) / test_iterations
 
+    times = [x * 1000 for x in times]
+
+    print("Environment runs at {:.1f} FPS".format(1/avg_time))
+    print("Step time is min: {:.2f} max: {:.2f} mean: {:.2f} median: {:.2f} ms".format(min(times), max(times), np.mean(times), np.median(times)))
+
+    plt.hist(times, bins=50)
+    plt.show()
+    plt.plot(range(len(times)), times)
+    plt.show()
+
+    pickle.dump(times, open("times.dat","wb"))
+
+
+    return
 
     print("Running learning Benchmark")
     train_episodes_finished = 0

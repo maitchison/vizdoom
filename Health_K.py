@@ -43,6 +43,12 @@ Things to make it faster
 # keras implementation of some maps. https://github.com/flyyufelix/VizDoom-Keras-RL
 """
 
+# force single threads, makes progream more CPU efficent but doesn't really hurt performance.
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+
 import vizdoom as vzd
 import itertools as it
 from random import sample, randint, random
@@ -62,6 +68,8 @@ import os.path
 import cv2
 import uuid
 import sys
+import argparse
+import shutil
 
 # --------------------------------------------------------
 # Debug settings
@@ -72,7 +80,7 @@ run_name = "results_health_k"
 SHOW_REWARDS = False
 SHOW_MAXQ = False
 show_model_updates = False
-show_first_frame = False
+SHOW_FIRST_FRAME = False
 
 
 # --------------------------------------------------------
@@ -81,7 +89,10 @@ show_first_frame = False
 
 learn_factor = 1
 
-epochs = 200//learn_factor
+num_stacks = 1
+num_channels = 3 # for color
+
+epochs = 100//learn_factor
 
 # Q-learning settings
 learning_rate = 0.00001         # maybe this is too slow! ? oh right... rewards very high i.e. 100 in this one.
@@ -109,6 +120,8 @@ first_update_step = 1000//learn_factor        # make sure we have some experienc
 # Other parameters
 frame_repeat = 10
 resolution = (120, 45)
+
+time_stats = {}
 
 # Configuration file path
 config_file_path = "scenarios/health_gathering_supreme.cfg"
@@ -167,27 +180,42 @@ screen_resolution = vzd.ScreenResolution.RES_160X120
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device: {}".format(device))
 
+def track_time_taken(method):
+
+    def timed(*args, **kwargs):
+        name = kwargs.get('log_name', method.__name__.upper())
+        start_time = time()
+        result = method(*args, **kwargs)
+        time_taken = time() - start_time
+        if name not in time_stats:
+            time_stats[name] = (0,0.0)
+        stat = time_stats[name]
+        time_stats[name] = (stat[0] + 1, stat[1] + time_taken)
+
+        return result
+
+    return timed
+
+def print_time_stats():
+    for k,v in time_stats.items():
+        count, total_time = v
+        per_time = total_time / count
+        print("{:<25}: called {:<8} times with cost of {:<8.3f}ms".format(k, count, per_time * 1000))
+
 
 # Converts and down-samples the input image
+@track_time_taken
 def preprocess(img):
     # note: this is quite slow, might switch to another method of resizing?
 
     original_img = img
-
-    """
-    img = np.swapaxes(img, 0, 2)
-    img = skimage.transform.resize(img, resolution, anti_aliasing=False, order=0)
-    img = np.swapaxes(img, 0, 2)
-    img = np.swapaxes(img, 1, 2)
-    img = img.astype(np.float32)
-    """
 
     img = np.swapaxes(img, 0, 2)
     img = cv2.resize(np.float32(img)/255, dsize=resolution[::-1], interpolation=cv2.INTER_LINEAR)
     img = np.swapaxes(img, 0, 2)
     img = np.swapaxes(img, 1, 2)
 
-    global show_first_frame
+    global SHOW_FIRST_FRAME
     if show_first_frame:
         print("original input shape:", original_img.shape)
         original_img = np.swapaxes(original_img, 0, 2)
@@ -204,7 +232,7 @@ def preprocess(img):
 
 class ReplayMemory:
     def __init__(self, capacity):
-        channels = 3
+        channels = num_channels * num_stacks
         state_shape = (capacity, channels, resolution[0], resolution[1])
         self.s1 = np.zeros(state_shape, dtype=np.float32)
         self.s2 = np.zeros(state_shape, dtype=np.float32)
@@ -241,7 +269,7 @@ def prod(X):
 class Net(nn.Module):
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=7, stride=4) #3 color channels, 4 previous frames.
+        self.conv1 = nn.Conv2d(num_channels * num_stacks, 32, kernel_size=7, stride=4) #3 color channels, 4 previous frames.
         self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
         self.bn2 = nn.BatchNorm2d(32)
@@ -250,6 +278,7 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(prod([32,11,1]), hidden_units)
         self.fc2 = nn.Linear(hidden_units, available_actions_count)
 
+    @track_time_taken
     def forward(self, x):
         x = x.to(device)          # Bx3x120x45
         x = F.relu(self.conv1(x)) # Bx32x29x10
@@ -277,7 +306,6 @@ def learn(s1, target_q):
     optimizer.step()
     return loss
 
-
 def get_q_values(state):
     global max_q
     state = torch.from_numpy(state)
@@ -301,6 +329,7 @@ def get_best_action(state):
     return action
 
 
+@track_time_taken
 def learn_from_memory():
     """ Learns from a single transition (making use of replay memory).
     s2 is ignored if s2_isterminal """
@@ -333,10 +362,17 @@ def exploration_rate(step):
         return start_eps + (step - start_eps_decay) / (end_eps_decay - start_eps_decay) * (end_eps - start_eps)
 
 
+@track_time_taken
+def env_step(action, frame_repeat):
+    return game.make_action(action, frame_repeat)
+
+def push_state_history(s):
+    pass
+
+@track_time_taken
 def perform_learning_step(step):
     """ Makes an action according to eps-greedy policy, observes the result
     (next state, reward) and learns from the transition"""
-
 
     s1 = preprocess(game.get_state().screen_buffer)
 
@@ -346,14 +382,15 @@ def perform_learning_step(step):
         a = randint(0, len(actions) - 1)
     else:
         # Choose the best action according to the network.
-        s1 = s1.reshape([1, 3, resolution[0], resolution[1]])
+        s1 = s1.reshape([1, num_channels * num_stacks, resolution[0], resolution[1]])
         a = get_best_action(s1)
         global prev_max_q
         prev_max_q = float(torch.max(get_q_values(s1)))
 
     global last_total_shaping_reward
 
-    reward = game.make_action(actions[a], frame_repeat)
+    # give some time for this to catch up...
+    reward = env_step(actions[a], frame_repeat)
 
     # Retrieve the shaping reward
     fixed_shaping_reward = game.get_game_variable(vzd.GameVariable.USER1)  # Get value of scripted variable
@@ -363,31 +400,18 @@ def perform_learning_step(step):
 
     reward += shaping_reward
 
-
     #if SHOW_REWARDS and reward > 0:
     #   print("Reward {} at step {}".format(reward, step))
     if SHOW_REWARDS and shaping_reward != 0:
         print("Shaping reward of {}".format(shaping_reward))
 
+
     isterminal = game.is_episode_finished()
+
     s2 = preprocess(game.get_state().screen_buffer) if not isterminal else None
 
-    # Remember the transition that was just experienced.
     memory.add_transition(s1, a, s2, isterminal, reward)
 
-    # update target net every so often.
-    if step % target_update == 0:
-        if show_model_updates:
-            print("Model update.")
-        target_model.load_state_dict(policy_model.state_dict())
-
-    if step >= first_update_step:
-        if update_every < 1:
-            for i in range(int(1/update_every)):
-                learn_from_memory()
-        else:
-            if step % update_every == 0:
-                learn_from_memory()
 
 
 # Creates and initializes ViZDoom environment.
@@ -403,6 +427,10 @@ def initialize_vizdoom(config_file_path):
     print("Doom initialized.")
     return game
 
+
+@track_time_taken
+def update_target():
+    target_model.load_state_dict(policy_model.state_dict())
 
 def run_test(**kwargs):
     """ Run a test with given parameters, returns stats in dictionary. """
@@ -430,7 +458,7 @@ def run_test(**kwargs):
     print("Actions:",actions)
 
     global optimizer
-    optimizer = torch.optim.Adam(policy_model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.RMSprop(policy_model.parameters(), lr=learning_rate)
 
     print("-"*60)
     print("Parameters ",kwargs)
@@ -441,6 +469,10 @@ def run_test(**kwargs):
     global last_total_shaping_reward
 
     for epoch in range(epochs):
+
+        # clear timing stats
+        global time_stats
+        time_stats = {}
 
         global max_q
         max_q = 0
@@ -458,9 +490,23 @@ def run_test(**kwargs):
 
             step = learning_step  + epoch*learning_steps_per_epoch
 
-            if SHOW_MAXQ and learning_step % 10000 == 0:
-                print("maxq: {:.2f} loss: {:.5f}".format(prev_max_q, float(prev_loss)))
             perform_learning_step(step)
+
+            # update target net every so often.
+            if step % target_update == 0:
+                if show_model_updates:
+                    print("Model update.")
+                update_target()
+
+
+            if step >= first_update_step:
+                if update_every < 1:
+                    for i in range(int(1 / update_every)):
+                        learn_from_memory()
+                else:
+                    if step % update_every == 0:
+                        learn_from_memory()
+
             if game.is_episode_finished():
                 last_total_shaping_reward = 0
                 score = game.get_total_reward()
@@ -475,6 +521,9 @@ def run_test(**kwargs):
         print("\tResults: mean: %.1f +/- %.1f," % (train_scores.mean(), train_scores.std()), \
               "min: %.1f," % train_scores.min(), "max: %.1f," % train_scores.max())
 
+        print("Timing stats:")
+        print_time_stats()
+
         print("\nTesting...")
         policy_model.eval()
         target_model.eval()
@@ -485,13 +534,13 @@ def run_test(**kwargs):
             while not game.is_episode_finished():
                 step += 1
                 state = preprocess(game.get_state().screen_buffer)
-                state = state.reshape([1, 3, resolution[0], resolution[1]])
+                state = state.reshape([1, num_channels * num_stacks, resolution[0], resolution[1]])
                 if random() < 0:
                     best_action_index = randint(0, len(actions) - 1)
                 else:
                     best_action_index = get_best_action(state)
                 #print("step", step, "action", best_action_index, "state",state.shape,"max q", torch.max(get_q_values(state)))
-                reward = game.make_action(actions[best_action_index], frame_repeat)
+                reward = env_step(actions[best_action_index], frame_repeat)
                 if SHOW_REWARDS and reward > 0:
                     print("Reward! {} at step {}".format(reward, step))
 
@@ -582,60 +631,8 @@ def save_results(results):
     db.append(results)
     pickle.dump(db, open(run_name+".dat","wb"))
 
-def test_exploration_rate():
-    """
-    Draw a graph showing exploration rate over time.
-    :return:
-    """
-    xs = list(range(200000))
-    ys = [exploration_rate(x) for x in xs]
-    plt.plot(xs, ys)
-    plt.show()
+def train_agent():
 
-def run_original(**kwargs):
-    """ Run the agent from the original paper."""
-    result = run_test(**kwargs)
-    save_results(result)
-
-def run_test_suite():
-    """ Runs tests at various levels update frequency. """
-
-    # run tests...
-    # tests = [{}] # start with default settings test.
-    tests = []
-    for lr in [1e-3, 3e-4, 1e-4, 3e-5, 1e-5]:
-        for ue in [1 / 4, 1 / 2, 1, 2, 4]:
-            tests.append({"update_every": ue, "learning_rate": lr})
-
-    for test_params in tests:
-        try:
-            result = run_test(**test_params)
-            save_results(result)
-        except Exception as e:
-            print("********** Test failed....")
-            print("Params:", test_params)
-            print("error:", e)
-
-
-if __name__ == '__main__':
-
-    # this doesn't hurt performance much and leaves other CPUs available for more workers.
-    os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    os.environ['MKL_NUM_THREADS'] = '1'
-
-    params = {}
-    if len(sys.argv) > 1:
-        # apply parameters
-        for param in sys.argv[1:]:
-            k,v = param.split("=")
-            params[k] = float(v)
-
-    # add unique ID to run name
-    run_name = run_name + " ["+uuid.uuid4().hex[:8]+"]"
-
-    print("Run:", run_name)
-
-    # Create Doom instance
     game = initialize_vizdoom(config_file_path)
 
     # Action = which buttons are pressed
@@ -645,6 +642,93 @@ if __name__ == '__main__':
     # Create replay memory which will store the transitions
     memory = ReplayMemory(capacity=replay_memory_size)
 
-    run_original(**params)
+    result = run_test(**kwargs)
+    save_results(result)
 
     game.close()
+
+
+
+def run_experiment(**params):
+    """ Runs an experiment with given parameters. """
+
+    uid = uuid.uuid4()
+    scenario_name = "blah"
+
+    experiment_name = "{} {} ".format(scenario_name, uid.hex[:16])
+
+    print("=" * 60)
+    print("Running Experiment {}".format(experiment_name))
+    print("=" * 60)
+
+    run_folder = "experiments"
+    job_folder = os.path.join(run_folder, experiment_name)
+
+    # create the job folder
+    os.makedirs(job_folder, exist_ok=True)
+
+    # create a file showing the run parameters
+    with open(os.path.join(job_folder, "params.txt"),"w") as f:
+        f.write(params)
+
+    # make a copy of the script that generated the results
+    this_script = sys.argv[0]
+    shutil.copy(this_script,os.path.join(job_folder, this_script))
+
+    # run the job
+    train_agent(**params)
+
+
+
+def run_benchmark():
+    # pass
+
+def run_simple_test(**params):
+    """ Runs a simple test to make sure model is able to learn the basic environment. """
+    # pass
+
+if __name__ == '__main__':
+
+    # handle parameters
+    parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
+    parser.add_argument('mode', type=str, nargs='+', help='train | test | benchmark')
+    parser.add_argument('--num_stack', default=4, type=int, help='Agent is shown this number of frames of history.')
+    parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate.')
+    parser.add_argument('--discount_factor', default=1, type=float, help='Discount factor.')
+    parser.add_argument('--epochs', default=100, type=int, help='Number of epochs to train for.')
+    parser.add_argument('--learning_steps_per_epoch', default=5000, type=int, help='Number of environment steps per epoch.')
+    parser.add_argument('--replay_memory_size', default=10000, type=int, help='Number of environment steps per epoch.')
+    parser.add_argument('--hidden_units', default=1024, type=int, help='Number of hidden units in model.')
+    parser.add_argument('--batch_size', default=64, type=int, help='Samples per minibatch.')
+
+
+
+
+    end_eps = 0.1
+    start_eps = 1.0
+    start_eps_decay = 4000
+    end_eps_decay = 104000
+
+
+    update_every = 1
+
+    # Training regime
+    test_episodes_per_epoch = 200 // learn_factor
+
+    target_update = 1000 // learn_factor  # 10k was DQN paper
+    first_update_step = 1000 // learn_factor  # make sure we have some experience before we start making updates.
+
+    # Other parameters
+    frame_repeat = 10
+    resolution = (120, 45)
+
+    # figure out mode
+    if mode == "train":
+        pass
+    elif mode == "benchmark":
+        pass
+    elif mode == "test":
+            pass
+
+
+
