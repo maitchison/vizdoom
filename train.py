@@ -59,6 +59,7 @@ MAX_GRAD = 1000     # this should be 1, the fact we have super high gradients is
 time_stats = {}
 prev_loss = 0
 max_q = 0
+max_grad = 0
 last_total_shaping_reward = 0
 
 # --------------------------------------------------------
@@ -157,9 +158,9 @@ class Config:
         """create the job folder"""
         os.makedirs(self.job_folder, exist_ok=True)
 
-    def move_job_folder(self):
+    def rename_job_folder(self):
         """ moves job to completed folder. """
-        shutil.move(self.job_folder, self.final_job_folder)
+        os.rename(self.job_folder, self.final_job_folder)
 
 def track_time_taken(method):
 
@@ -284,14 +285,18 @@ def learn(s1, target_q):
     for param in policy_model.parameters(): #clamp gradients...
         if param.grad is not None:
             grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
-            max_grad = np.max(np.abs(grads))
+            global max_grad
+            max_grad = max(max_grad, np.max(np.abs(grads)))
+            """
             if max_grad > MAX_GRAD:
-                logging.critical("Gradients on tensor with dims {} are too large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f}), clamping to [{},{}]".format(
+                logging.debug("Gradients on tensor with dims {} are very large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f})]".format(
                     param.shape,
                     np.min(grads), np.max(grads), np.mean(grads), np.std(grads),
                     -MAX_GRAD, MAX_GRAD
                 ))
-                param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
+                # don't actually clamp, this might be causing problems...
+                # param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
+            """
     optimizer.step()
     return loss
 
@@ -387,7 +392,7 @@ def perform_learning_step(step):
     shaping_reward = shaping_reward - last_total_shaping_reward
     last_total_shaping_reward += shaping_reward
 
-    if abs(shaping_reward) > 200:
+    if abs(shaping_reward) > 1000:
         logging.critical("Unusually large shaping reward found {}.".format(shaping_reward))
 
     reward += shaping_reward
@@ -499,7 +504,9 @@ def train_agent():
         time_stats = {}
 
         global max_q
+        global max_grad
         max_q = 0
+        max_grad = 0
 
         logging.critical("------------- Epoch {}/{} (eps={:.3f}) -------------".format(
             epoch + 1, config.epochs,
@@ -574,11 +581,20 @@ def train_agent():
         if max_q > 10000:
             logging.warning("")
             logging.warning("******* Warning MaxQ was too high ***************")
-            logging.warning("MaxQ:",max_q)
+            logging.warning("MaxQ: {:.2f}".format(max_q))
             logging.warning("*************************************************")
             logging.warning("")
         else:
             logging.info("\tMaxQ: {:.2f}".format(max_q))
+
+        if max_grad > 10000:
+            logging.warning("")
+            logging.warning("******* Warning MaxGrad was too high ***************")
+            logging.warning("MaxGrad: {:.2f}".format(max_grad))
+            logging.warning("*************************************************")
+            logging.warning("")
+        else:
+            logging.info("\tMaxGrad: {:.2f}".format(max_grad))
 
         test_scores = np.array(test_scores)
 
@@ -615,14 +631,15 @@ def train_agent():
 
     game.close()
     
-    for _ in range(10):
+    for _ in range(3):
         try:
-            config.move_job_folder()
+            sleep(30)  # give dropbox a chance to sync up...
+            config.rename_job_folder()
             break
-        except:
-            sleep(10)  # give dropbox a chance to sync up...
+        except Exception as e:
+            logging.debug("Failed to rename job folder: {}".format(e))
     else:
-        print("Error moving completed job to {}.".format(config.final_job_folder))
+        logging.critical("Error moving completed job to {}.".format(config.final_job_folder))
 
     return results
 

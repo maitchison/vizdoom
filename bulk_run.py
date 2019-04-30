@@ -9,7 +9,7 @@ import sys
 
 def get_job_key(args):
     params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
-    return " ".join("{}={}".format(k, v) for k, v in params)
+    return " ".join("{}={}".format(k, v) for k, v in params)+" "
 
 
 def count_jobs(args):
@@ -42,26 +42,52 @@ def count_job(repeats, **args):
 
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run')
+parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--num_repeats', type=int, default=3, help='Number of times to repeat each trial.')
+
 args = parser.parse_args()
 
-if args.mode == "count":
-    for target_update in [100, 500, 1000, 2000]:
-        for learning_rate in [0.000003, 0.00001, 0.00003]:
-            count_job(
-                repeats=args.num_repeats,
-                experiment="trial_5",
-                target_update=target_update,
-                learning_rate=learning_rate
-            )
+# trial 5.
 
-elif args.mode == "run":
-    # trial 4.
+if args.trial == "trial_5":
+
     for target_update in [100, 500, 1000, 2000]:
-        for learning_rate in [0.000003, 0.00001, 0.00003]:
+        for learning_rate in [0.00003, 0.0001]:
+            if args.mode == "run":
+                process_job(
+                    repeats=args.num_repeats,
+                    experiment="trial_5",
+                    target_update=target_update,
+                    learning_rate=learning_rate
+                )
+            else:
+                count_job(
+                    repeats=args.num_repeats,
+                    experiment="trial_5",
+                    target_update=target_update,
+                    learning_rate=learning_rate
+                )
+
+elif args.trial == "trial_6":
+
+    for update_every in [1/64,1/32,1/16,1/8, 1/4,1/2,1,2,4,8]:
+        if args.mode == "run":
             process_job(
                 repeats=args.num_repeats,
-                experiment="trial_5",
-                target_update=target_update,
-                learning_rate=learning_rate
+                experiment="trial_6",
+                update_every=update_every,
+                target_update=100,
+                learning_rate=3e-5
             )
+        else:
+            count_job(
+                repeats=args.num_repeats,
+                experiment="trial_6",
+                update_every=update_every,
+                target_update=100,
+                learning_rate=3e-5
+            )
+
+else:
+    print("Invalid trial name {}".format(args.trial))
+
