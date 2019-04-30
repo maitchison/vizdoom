@@ -107,11 +107,11 @@ class Config:
 
     @property
     def job_folder(self):
-        return os.path.join("runs", "running", self.job_subfolder)
+        return os.path.join("runs", self.experiment, "_"+self.job_subfolder)
 
     @property
     def final_job_folder(self):
-        return os.path.join("runs",self.experiment,self.job_subfolder)
+        return os.path.join("runs",self.experiment, self.job_subfolder)
 
     @property
     def job_subfolder(self):
@@ -279,7 +279,14 @@ def learn(s1, target_q):
     loss.backward()
     for param in policy_model.parameters(): #clamp gradients...
         if param.grad is not None:
-            param.grad.data.clamp_(-1, 1)
+            grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
+            max_grad = np.max(np.abs(grads))
+            if max_grad > 100:
+                logging.critical("Gradients on tensor with dims {} are too large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f}), clamping to [-100,100]".format(
+                    param.shape,
+                    np.min(grads), np.max(grads), np.mean(grads), np.std(grads)
+                ))
+                param.grad.data.clamp_(-100, 100)
     optimizer.step()
     return loss
 
