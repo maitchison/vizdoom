@@ -600,6 +600,15 @@ def train_agent():
     save_model("_complete")
 
     game.close()
+    
+    for _ in range(10):
+        try:
+            config.move_job_folder()
+            break
+        except:
+            sleep(10)  # give dropbox a chance to sync up...
+    else:
+        print("Error moving completed job to {}.".format(config.final_job_folder))
 
     return results
 

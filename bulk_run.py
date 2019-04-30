@@ -5,15 +5,17 @@ Run a list of bulk experiments.
 import argparse
 import subprocess
 import os
+import sys
 
 def get_job_key(args):
-    return(str(args))
+    params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
+    return " ".join("{}={}".format(k, v) for k, v in params)
+
 
 def count_jobs(args):
 
     # get the job key
-    params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
-    key = " ".join("{}={}".format(k,v) for k, v in params)
+    key = get_job_key(args)
 
     # count the number folders that have our experiment name and arguments.
     counter = 0
@@ -25,7 +27,8 @@ def count_jobs(args):
 
 def run_job(args):
     """ Runs job with given arguments. """
-    subprocess.call(["python","train.py","train"] + ["--{}={}".format(k,v) for k,v in args.items()])
+    python = "python3" if sys.platform in ["linux", "linux2"] else "python"
+    subprocess.call([python,"train.py","train"] + ["--{}={}".format(k,v) for k,v in args.items()])
 
 def process_job(repeats, **args):
     """ Process a job. """
@@ -33,16 +36,32 @@ def process_job(repeats, **args):
         if count_jobs(args) < repeats:
             run_job(args)
 
+def count_job(repeats, **args):
+    """ Process a job. """
+    print("{:<40} {}/{}".format(get_job_key(args), count_jobs(args), repeats))
+
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
+parser.add_argument('mode', type=str, help='count | run')
 parser.add_argument('--num_repeats', type=int, default=3, help='Number of times to repeat each trial.')
 args = parser.parse_args()
 
-# trial 4.
-for target_update in [100, 500, 1000, 2000]:
-    for learning_rate in [0.000003, 0.00001, 0.00003]:
-        process_job(
-            repeats=args.num_repeats,
-            experiment="trial_5",
-            target_update=target_update,
-            learning_rate=learning_rate
-        )
+if args.mode == "count":
+    for target_update in [100, 500, 1000, 2000]:
+        for learning_rate in [0.000003, 0.00001, 0.00003]:
+            count_job(
+                repeats=args.num_repeats,
+                experiment="trial_5",
+                target_update=target_update,
+                learning_rate=learning_rate
+            )
+
+elif args.mode == "run":
+    # trial 4.
+    for target_update in [100, 500, 1000, 2000]:
+        for learning_rate in [0.000003, 0.00001, 0.00003]:
+            process_job(
+                repeats=args.num_repeats,
+                experiment="trial_5",
+                target_update=target_update,
+                learning_rate=learning_rate
+            )
