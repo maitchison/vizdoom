@@ -52,6 +52,10 @@ SHOW_FIRST_FRAME = False
 # Globals
 # --------------------------------------------------------
 
+MAX_GRAD = 1000     # this should be 1, the fact we have super high gradients is concerning, maybe
+                    # I should make sure input is normalised to [0,1] and change the reward shaping structure
+                    # to not be so high.  Also log any extreme rewards...
+
 time_stats = {}
 prev_loss = 0
 max_q = 0
@@ -281,12 +285,13 @@ def learn(s1, target_q):
         if param.grad is not None:
             grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
             max_grad = np.max(np.abs(grads))
-            if max_grad > 100:
-                logging.critical("Gradients on tensor with dims {} are too large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f}), clamping to [-100,100]".format(
+            if max_grad > MAX_GRAD:
+                logging.critical("Gradients on tensor with dims {} are too large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f}), clamping to [{},{}]".format(
                     param.shape,
-                    np.min(grads), np.max(grads), np.mean(grads), np.std(grads)
+                    np.min(grads), np.max(grads), np.mean(grads), np.std(grads),
+                    -MAX_GRAD, MAX_GRAD
                 ))
-                param.grad.data.clamp_(-100, 100)
+                param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
     optimizer.step()
     return loss
 
@@ -382,11 +387,13 @@ def perform_learning_step(step):
     shaping_reward = shaping_reward - last_total_shaping_reward
     last_total_shaping_reward += shaping_reward
 
+    if abs(shaping_reward) > 200:
+        logging.critical("Unusually large shaping reward found {}.".format(shaping_reward))
+
     reward += shaping_reward
 
     if SHOW_REWARDS and shaping_reward != 0:
         logging.debug("Shaping reward of {}".format(shaping_reward))
-
 
     isterminal = game.is_episode_finished()
 
