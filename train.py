@@ -39,6 +39,8 @@ import argparse
 import shutil
 import logging
 import platform
+import keyboard
+
 
 # --------------------------------------------------------
 # Debug settings
@@ -61,6 +63,8 @@ prev_loss = 0
 max_q = 0
 max_grad = 0
 last_total_shaping_reward = 0
+learning_steps = 0
+kb = keyboard.KBHit()
 
 # --------------------------------------------------------
 
@@ -326,12 +330,16 @@ def get_best_action(state):
 
 
 @track_time_taken
-def learn_from_memory():
+def perform_learning_step():
     """ Learns from a single transition (making use of replay memory).
     s2 is ignored if s2_isterminal """
 
     # Get a random minibatch from the replay memory and learns from it.
     if memory.size > config.batch_size:
+
+        global learning_steps
+        learning_steps += 1
+
         s1, a, s2, isterminal, r = memory.get_sample(config.batch_size)
 
         q = get_q_values(s2).data.numpy()
@@ -345,6 +353,11 @@ def learn_from_memory():
         this_loss = learn(s1, target_q)
         global prev_loss
         prev_loss = 0.95 * prev_loss + 0.05 * float(this_loss)
+
+        # update target net every so often.
+        if learning_steps % config.target_update == 0:
+            update_target()
+
 
 def exploration_rate(step):
     """# Define exploration rate change over time"""
@@ -367,7 +380,7 @@ def push_state_history(s):
     pass
 
 @track_time_taken
-def perform_learning_step(step):
+def perform_environment_step(step):
     """ Makes an action according to eps-greedy policy, observes the result
     (next state, reward) and learns from the transition"""
 
@@ -433,6 +446,32 @@ def tidy_args(args):
             result[k] = v
     return result
 
+def handle_keypress():
+    if kb.kbhit():
+        c = kb.getch().lower()
+        if c == "p":
+            print()
+            logging.critical("***** Pausing. Press 'R' to resume. ****")
+            while kb.getch().lower() != 'r':
+                sleep(10)
+        elif c == "t":
+            print()
+            show_time_stats(logging.CRITICAL)
+        elif c == "i":
+            print()
+            logging.critical("***** ID {} [{}]".format(config.job_name, config.job_id))
+        elif c == "h":
+            print()
+            logging.critical("**** H for help")
+            logging.critical("**** I to show jobname")
+            logging.critical("**** T for timing stats")
+            logging.critical("**** P to pause")
+            logging.critical("**** Q to quit")
+        elif c == "q":
+            exit(-1)
+        else:
+            print()
+            logging.critical("\nInvalid input {}.\n".format(c))
 
 def train_agent():
     """ Run a test with given parameters, returns stats in dictionary. """
@@ -521,21 +560,19 @@ def train_agent():
         last_total_shaping_reward = 0
         for learning_step in trange(config.learning_steps_per_epoch, leave=False):
 
+            handle_keypress()
+
             step = learning_step + epoch*config.learning_steps_per_epoch
 
-            perform_learning_step(step)
-
-            # update target net every so often.
-            if step % config.target_update == 0:
-                update_target()
+            perform_environment_step(step)
 
             if step >= config.first_update_step:
                 if config.update_every < 1:
                     for i in range(int(1 / config.update_every)):
-                        learn_from_memory()
+                        perform_learning_step()
                 else:
                     if step % int(config.update_every) == 0:
-                        learn_from_memory()
+                        perform_learning_step()
 
             if game.is_episode_finished():
                 last_total_shaping_reward = 0
@@ -564,6 +601,7 @@ def train_agent():
             game.new_episode()
             step = 0
             while not game.is_episode_finished():
+                handle_keypress()
                 step += 1
                 state = preprocess(game.get_state().screen_buffer)
                 state = state.reshape([1, config.num_channels * config.num_stacks, config.resolution[0], config.resolution[1]])
