@@ -70,7 +70,7 @@ if args.trial == "trial_5":
 
 elif args.trial == "trial_6":
 
-    for update_every in [1/64,1/32,1/16,1/8, 1/4,1/2,1,2,4,8]:
+    for update_every in [8,4,2,1,1/2,1/4,1/8,1/16,1/32,1/64]:
         if args.mode == "run":
             process_job(
                 repeats=args.num_repeats,

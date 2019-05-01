@@ -65,6 +65,7 @@ max_grad = 0
 last_total_shaping_reward = 0
 learning_steps = 0
 kb = keyboard.KBHit()
+console_logger = None
 
 # --------------------------------------------------------
 
@@ -453,7 +454,7 @@ def handle_keypress():
             print()
             logging.critical("***** Pausing. Press 'R' to resume. ****")
             while kb.getch().lower() != 'r':
-                sleep(10)
+                sleep(0.1)
         elif c == "t":
             print()
             show_time_stats(logging.CRITICAL)
@@ -668,16 +669,25 @@ def train_agent():
     save_model("_complete")
 
     game.close()
-    
+
+    # this stops all logging, and released the log.txt file allowing the
+    # folder to be renamed.
+    for log in logging.getLogger().handlers:
+        log.close()
+        logging.getLogger().removeHandler(log)
+
+    sleep(10)           # give Dropbox a chance to sync up, and logs etc to finish up.
+
     for _ in range(3):
         try:
-            sleep(30)  # give dropbox a chance to sync up...
             config.rename_job_folder()
             break
         except Exception as e:
-            logging.debug("Failed to rename job folder: {}".format(e))
+            print("\nFailed to rename job folder: {}\n".format(e))
+            sleep(60)  # give Dropbox a chance to sync up.
     else:
-        logging.critical("Error moving completed job to {}.".format(config.final_job_folder))
+        print("Error moving completed job to {}.".format(config.final_job_folder))
+
 
     return results
 
@@ -795,6 +805,12 @@ def generate_graphs(data):
 
     plt.savefig(os.path.join(config.job_folder, "training.png"))
 
+def enable_logging():
+    global console_logger
+    console_logger = logging.StreamHandler()
+    console_logger.setLevel(logging.INFO if config.verbose else logging.ERROR)
+    logging.getLogger().addHandler(console_logger)
+
 if __name__ == '__main__':
 
     config = Config()
@@ -828,9 +844,7 @@ if __name__ == '__main__':
                         filename=os.path.join(config.job_folder,'log.txt'),
                         filemode='w')
 
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO if config.verbose else logging.ERROR )
-    logging.getLogger().addHandler(ch)
+    enable_logging()
 
     logging.info("Using device: {}".format(config.device))
 
