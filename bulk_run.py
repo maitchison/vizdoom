@@ -43,51 +43,70 @@ def count_job(repeats, **args):
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run')
 parser.add_argument('trial', type=str, help='Trial to run')
-parser.add_argument('--num_repeats', type=int, default=3, help='Number of times to repeat each trial.')
+parser.add_argument('--repeats', type=int, default=3, help='Number of times to repeat each trial.')
 
 args = parser.parse_args()
 
 # trial 5.
-
+jobs = []
 if args.trial == "trial_5":
-
     for target_update in [100, 500, 1000, 2000]:
         for learning_rate in [0.00003, 0.0001]:
-            if args.mode == "run":
-                process_job(
-                    repeats=args.num_repeats,
-                    experiment="trial_5",
-                    target_update=target_update,
-                    learning_rate=learning_rate
-                )
-            else:
-                count_job(
-                    repeats=args.num_repeats,
-                    experiment="trial_5",
-                    target_update=target_update,
-                    learning_rate=learning_rate
-                )
-
+            jobs.append(
+                {
+                    'target_update':target_update,
+                    'learning_rate':learning_rate
+                 }
+            )
 elif args.trial == "trial_6":
-
-    for update_every in [8,4,2,1,1/2,1/4,1/8,1/16,1/32,1/64]:
-        if args.mode == "run":
-            process_job(
-                repeats=args.num_repeats,
-                experiment="trial_6",
-                update_every=update_every,
-                target_update=100,
-                learning_rate=3e-5
-            )
-        else:
-            count_job(
-                repeats=args.num_repeats,
-                experiment="trial_6",
-                update_every=update_every,
-                target_update=100,
-                learning_rate=3e-5
-            )
+    for update_every in [8.0, 4.0, 2.0, 1.0, 1 / 2, 1 / 4, 1 / 8, 1 / 16, 1 / 32, 1 / 64]:
+        jobs.append(
+            {
+                'update_every': update_every,
+                'target_update':100,
+                'learning_rate':3e-5
+             }
+        )
+elif args.trial == "test_envs":
+    for env in [
+        "scenarios/basic.cfg",
+        "scenarios/simpler_basic.cfg",
+        "scenarios/deadly_corridor.cfg",
+        "scenarios/deathmatch.cfg",
+        "scenarios/defend_the_center.cfg",
+        "scenarios/defend_the_line.cfg",
+        "scenarios/health_gathering.cfg"
+        "scenarios/health_gathering_supreme.cfg"
+        "scenarios/predict_position.cfg"
+        "scenarios/rocket_basic.cfg"
+        "scenarios/take_cover.cfg"
+    ]:
+        jobs.append(
+            {
+                'config_file_path': env,
+                'target_update': 100,               # maybe this has to be tuned?
+                'learning_rate': 3e-5,
+                'epochs': 100,                      # some of these may require more than 100k training steps.
+                'test_episodes_per_epoch': 10,      # faster for training, and can re-evaluate later.
+             }
+        )
 
 else:
-    print("Invalid trial name {}".format(args.trial))
+    print("Invalid trial name '{}'".format(args.trial))
+    exit(-1)
 
+for job in jobs:
+    if args.mode == "count":
+        count_job(
+            repeats=args.repeats,
+            experiment=args.trial,
+            **job
+        )
+    elif args.mode == "run":
+        process_job(
+            repeats=args.repeats,
+            experiment=args.trial,
+            **job
+        )
+    else:
+        print("Invalid mode {}".format(args.mode))

@@ -828,9 +828,11 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, help='Samples per minibatch.')
     parser.add_argument('--device', type=str, help='CPU | CUDA')
     parser.add_argument('--verbose', type=bool, help='enable verbose output')
-    parser.add_argument('--update_every', type=float, help='apply update every x steps')
+    parser.add_argument('--update_every', type=float, help='apply update every x learning steps')
     parser.add_argument('--experiment', type=str, help='name of subfolder to put experiment in.')
     parser.add_argument('--target_update', type=int, help='how often to update target network')
+    parser.add_argument('--test_episodes_per_epoch', type=int, help='how many tests epsodes to run each epoch')
+    parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
 
     args = parser.parse_args()
 
