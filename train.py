@@ -58,19 +58,36 @@ MAX_GRAD = 1000     # this should be 1, the fact we have super high gradients is
                     # I should make sure input is normalised to [0,1] and change the reward shaping structure
                     # to not be so high.  Also log any extreme rewards...
 
+aux_inputs = 3      # number of auxilary inputs to model.
+
+preview_screen_resolution = vzd.ScreenResolution.RES_640X480
+train_screen_resolution = vzd.ScreenResolution.RES_160X120
+
 time_stats = {}
 prev_loss = 0
 max_q = 0
 max_grad = 0
 last_total_shaping_reward = 0
 learning_steps = 0
+previous_health = 0
 kb = keyboard.KBHit()
 console_logger = None
+health_history = []
+observation_history = []    # observational history, plus health and time tick.
+data_history = []    # observational history, plus health and time tick.
+game = None
+game_hq = None      # for video previews
+
 
 # --------------------------------------------------------
 
-# this is the lowest resolution we can go, and should be fine.
-screen_resolution = vzd.ScreenResolution.RES_160X120
+def clean(s):
+    valid_chars = '-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    return "".join([x if x in valid_chars else "_" for x in s])
+
+def get_job_key(args):
+    params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
+    return " ".join("{}={}".format(clean(k), clean(str(v))) for k, v in params)+" "
 
 class Config:
 
@@ -100,6 +117,11 @@ class Config:
         self.experiment = "experiments"
         self.computer_specs = platform.uname()
         self.hostname = platform.node()
+        self.include_aux_rewards = True
+        self.health_as_reward = False
+        self.export_video = True
+        # this makes config file loading require vizdoom... which I don't want.
+        # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
     def apply_args(self, args):
         """
@@ -117,20 +139,33 @@ class Config:
 
     @property
     def job_folder(self):
-        return os.path.join("runs", self.experiment, "_"+self.job_subfolder)
+        """ path to job folder. """
+
+        if self.mode == "benchmark":
+            experiment = "benchmarks"
+        elif self.mode == "test":
+            experiment = "test"
+        else:
+            experiment = self.experiment
+
+        return os.path.join("runs", experiment, "_"+self.job_subfolder)
 
     @property
     def final_job_folder(self):
-        return os.path.join("runs",self.experiment, self.job_subfolder)
+
+        if self.mode == "benchmark":
+            experiment = "benchmarks"
+        elif self.mode == "test":
+            experiment = "test"
+        else:
+            experiment = self.experiment
+
+        return os.path.join("runs", experiment, self.job_subfolder)
 
     @property
     def job_subfolder(self):
-        if self.mode == "benchmark":
-            return os.path.join("benchmarks",self.job_id)
-        elif self.mode == "test":
-            return os.path.join("tests", self.job_id)
-        else:
-            return "{} [{}]".format(self.job_name, self.job_id)
+        """ job folder without runs folder and experiment folder. """
+        return "{} [{}]".format(self.job_name, self.job_id)
 
     @property
     def job_id(self):
@@ -143,9 +178,7 @@ class Config:
     @property
     def job_name(self):
         """ Describes the job's parameters. """
-        params = sorted([(k,v) for k,v in self.args.__dict__.items() if k not in ["mode"] and v is not None])
-        args_string = " ".join("{}={}".format(k,v) for k, v in params)
-        return args_string
+        return get_job_key(args.__dict__)
 
     @property
     def start_eps_decay(self):
@@ -201,7 +234,7 @@ def preprocess(img):
     original_img = img
 
     img = np.swapaxes(img, 0, 2)
-    img = cv2.resize(np.float32(img)/255, dsize=config.resolution[::-1], interpolation=cv2.INTER_LINEAR)
+    img = cv2.resize(np.float32(img)/255, dsize=config.resolution[::-1], interpolation=cv2.INTER_AREA)
     img = np.swapaxes(img, 0, 2)
     img = np.swapaxes(img, 1, 2)
 
@@ -219,10 +252,12 @@ def preprocess(img):
 
 class ReplayMemory:
     def __init__(self, capacity):
-        channels = config.num_channels * config.num_stacks
-        state_shape = (capacity, channels, config.resolution[0], config.resolution[1])
-        self.s1 = np.zeros(state_shape, dtype=np.float32)
-        self.s2 = np.zeros(state_shape, dtype=np.float32)
+        state_shape = (capacity, config.num_channels * config.num_stacks, config.resolution[0], config.resolution[1])
+        data_shape = (capacity, aux_inputs * config.num_stacks)
+        self.s1 = np.zeros(state_shape, dtype=np.uint8)
+        self.s2 = np.zeros(state_shape, dtype=np.uint8) # save memory...
+        self.d1 = np.zeros(data_shape, dtype=np.float32)
+        self.d2 = np.zeros(data_shape, dtype=np.float32)
         self.a = np.zeros(capacity, dtype=np.int32)
         self.r = np.zeros(capacity, dtype=np.float32)
         self.isterminal = np.zeros(capacity, dtype=np.float32)
@@ -231,20 +266,35 @@ class ReplayMemory:
         self.size = 0
         self.pos = 0
 
-    def add_transition(self, s1, action, s2, isterminal, reward):
-        self.s1[self.pos, :, :, :] = s1
+    def add_transition(self, s1, d1, action, s2, d2, isterminal, reward):
+
+        s1 = np.uint8(s1 * 255)
+
+        self.s1[self.pos, :, :, :] = s1[0]
+        self.d1[self.pos] = d1
         self.a[self.pos] = action
         if not isterminal:
-            self.s2[self.pos, :, :, :] = s2
+            s2 = np.uint8(s2 * 255)
+            self.s2[self.pos, :, :, :] = s2[0]
+            self.d2[self.pos] = d2
         self.isterminal[self.pos] = isterminal
         self.r[self.pos] = reward
 
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
+    @track_time_taken
     def get_sample(self, sample_size):
         i = sample(range(0, self.size), sample_size)
-        return self.s1[i], self.a[i], self.s2[i], self.isterminal[i], self.r[i]
+        return (
+            np.divide(self.s1[i], 255, dtype="float32"),
+            self.d1[i],
+            self.a[i],
+            np.divide(self.s2[i], 255, dtype="float32"),
+            self.d2[i],
+            self.isterminal[i],
+            self.r[i]
+        )
 
 
 def prod(X):
@@ -254,6 +304,7 @@ def prod(X):
     return y
 
 class Net(nn.Module):
+
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(config.num_channels * config.num_stacks, 32, kernel_size=7, stride=4) #3 color channels, 4 previous frames.
@@ -262,29 +313,34 @@ class Net(nn.Module):
         self.bn2 = nn.BatchNorm2d(32)
         self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1)
         self.bn3 = nn.BatchNorm2d(32)
-        self.fc1 = nn.Linear(prod([32,11,1]), config.hidden_units)
+        self.fc1 = nn.Linear(prod([32,11,1]) + aux_inputs * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
     @track_time_taken
-    def forward(self, x):
-        x = x.to(config.device)   # Bx3x120x45
+    def forward(self, x, d):
+
+        x = x.to(config.device)   # Bx12x120x45
+        d = d.to(config.device)   # Bx4x3
+
         x = F.relu(self.conv1(x)) # Bx32x29x10
         x = F.relu(self.conv2(x)) # Bx32x13x3
         x = F.relu(self.conv3(x)) # Bx32x11x1
-        x = x.view(-1, prod(x.shape[1:]))
+        x = x.view(-1, prod(x.shape[1:])) # Bx352
+        x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
         x = self.fc2(x)
         return x.cpu()
 
 criterion = nn.MSELoss()
 
-def learn(s1, target_q):
+def learn(s1, d1, target_q):
     s1 = torch.from_numpy(s1)
+    d1 = torch.from_numpy(d1)
     target_q = torch.from_numpy(target_q)
     s1, target_q = Variable(s1), Variable(target_q)
 
     optimizer.zero_grad()
-    output = policy_model(s1)
+    output = policy_model(s1, d1)
     loss = criterion(output, target_q)
     loss.backward()
     for param in policy_model.parameters(): #clamp gradients...
@@ -305,26 +361,26 @@ def learn(s1, target_q):
     optimizer.step()
     return loss
 
-def get_q_values(state):
+def get_q_values(s,d):
     global max_q
-    state = torch.from_numpy(state)
-    state = Variable(state)
-    q = policy_model(state)
+    s = Variable(torch.from_numpy(s))
+    d = Variable(torch.from_numpy(d))
+    q = policy_model(s,d)
     max_q = max(max_q, float(torch.max(q)))
     return q
 
-def get_target_q_values(state):
+def get_target_q_values(s,d):
     global max_q
-    state = torch.from_numpy(state)
-    state = Variable(state)
-    q = target_model(state).detach()
+    s = Variable(torch.from_numpy(s))
+    d = Variable(torch.from_numpy(d))
+    q = target_model(s,d).detach()
     max_q = max(max_q, float(torch.max(q)))
     return q
 
-def get_best_action(state):
-    state = torch.from_numpy(state)
-    state = Variable(state)
-    q = policy_model(state).detach()
+def get_best_action(s,d):
+    s = Variable(torch.from_numpy(s))
+    d = Variable(torch.from_numpy(d))
+    q = policy_model(s,d).detach()
     m, index = torch.max(q, 1)
     action = index.data.numpy()[0]
     return action
@@ -341,17 +397,17 @@ def perform_learning_step():
         global learning_steps
         learning_steps += 1
 
-        s1, a, s2, isterminal, r = memory.get_sample(config.batch_size)
+        s1, d1, a, s2, d2, isterminal, r = memory.get_sample(config.batch_size)
 
-        q = get_q_values(s2).data.numpy()
+        q = get_q_values(s2, d2).data.numpy()
         q2 = np.max(q, axis=1)
-        target_q = get_target_q_values(s1).data.numpy()
+        target_q = get_target_q_values(s1, d1).data.numpy()
         # target differs from q only for the selected action. The following means:
         # target_Q(s,a) = r + gamma * max Q(s2,_) if isterminal else r
 
         target_q[np.arange(target_q.shape[0]), a] = r + config.discount_factor * (1 - isterminal) * q2
 
-        this_loss = learn(s1, target_q)
+        this_loss = learn(s1, d1, target_q)
         global prev_loss
         prev_loss = 0.95 * prev_loss + 0.05 * float(this_loss)
 
@@ -377,15 +433,42 @@ def exploration_rate(step):
 def env_step(action, frame_repeat):
     return game.make_action(action, frame_repeat)
 
-def push_state_history(s):
-    pass
+
+def push_state(s,d):
+    observation_history.append(s)
+    data_history.append(d)
+    if len(observation_history) > config.num_stacks:
+        del observation_history[:-config.num_stacks]
+        del data_history[:-config.num_stacks]
+
+
+def action_list_to_id(action_list):
+    mul = 1
+    result = 0
+    for x in action_list:
+        result += mul * x
+        mul *= 2
+    return result
+
+
+def get_observation():
+    return preprocess(game.get_state().screen_buffer)
+
+
+def get_data():
+    return np.float32([
+        game.get_game_variable(vzd.GameVariable.HEALTH),
+        game.get_episode_time(),
+        action_list_to_id(game.get_last_action())
+    ])
+
 
 @track_time_taken
 def perform_environment_step(step):
     """ Makes an action according to eps-greedy policy, observes the result
     (next state, reward) and learns from the transition"""
 
-    s1 = preprocess(game.get_state().screen_buffer)
+    s1, d1 = get_stack()
 
     # With probability eps make a random action.
     eps = exploration_rate(step)
@@ -393,12 +476,18 @@ def perform_environment_step(step):
     if random() <= eps:
         a = randint(0, len(actions) - 1)
     else:
-        a = get_best_action(s1[np.newaxis, :, :, :])
+        a = get_best_action(s1, d1)
 
     global last_total_shaping_reward
 
     # give some time for this to catch up...
     reward = env_step(actions[a], config.frame_repeat)
+
+    if config.health_as_reward:
+        current_health = game.get_game_variable(vzd.GameVariable.HEALTH)
+        delta_health = current_health - health_history[-1]
+        reward = delta_health
+        health_history.append(current_health)
 
     # Retrieve the shaping reward
     fixed_shaping_reward = game.get_game_variable(vzd.GameVariable.USER1)  # Get value of scripted variable
@@ -416,24 +505,50 @@ def perform_environment_step(step):
 
     isterminal = game.is_episode_finished()
 
-    s2 = preprocess(game.get_state().screen_buffer) if not isterminal else None
+    if isterminal:
+        s2, d2 = None, None
+    else:
+        push_state(get_observation(), get_data())
+        s2, d2 = get_stack()
 
-    memory.add_transition(s1, a, s2, isterminal, reward)
-
+    memory.add_transition(s1, d1, a, s2, d2, isterminal, reward)
 
 
 # Creates and initializes ViZDoom environment.
-def initialize_vizdoom(config_file_path):
+def initialize_vizdoom():
+    """
+    Initialize game (global varaible).
+    :return:
+    """
+
+    global game
+    global game_hq
+
+    if game is not None:
+        game.close()
+
+    if game_hq is not None:
+        game_hq.close()
+
     logging.info("Initializing Doom.")
     game = vzd.DoomGame()
-    game.load_config(config_file_path)
+    game.load_config(config.config_file_path)
     game.set_window_visible(False)
     game.set_mode(vzd.Mode.PLAYER)
     game.set_screen_format(vzd.ScreenFormat.CRCGCB)
-    game.set_screen_resolution(screen_resolution)
+    game.set_screen_resolution(train_screen_resolution)
     game.init()
+
+    if config.export_video:
+        game_hq = vzd.DoomGame()
+        game_hq.load_config(config.config_file_path)
+        game_hq.set_window_visible(False)
+        game_hq.set_mode(vzd.Mode.PLAYER)
+        game_hq.set_screen_format(vzd.ScreenFormat.CRCGCB)
+        game_hq.set_screen_resolution(preview_screen_resolution)
+        game_hq.init()
+
     logging.info("Doom initialized.")
-    return game
 
 
 @track_time_taken
@@ -474,6 +589,64 @@ def handle_keypress():
             print()
             logging.critical("\nInvalid input {}.\n".format(c))
 
+
+def get_final_score():
+    if config.health_as_reward:
+        # use integral of health over time assuming agent would have lasted 2100 steps.
+        final_score = sum(health_history) / (2100 / config.frame_repeat)
+    else:
+        final_score = game.get_total_reward()
+
+    return final_score
+
+
+def reset_agent():
+    """ Resets agent and stats to start of episode. """
+
+    global previous_health
+    global last_total_shaping_reward
+    global health_history
+
+    previous_health = 100
+    last_total_shaping_reward = 0
+    health_history = [100]
+
+    game.new_episode()
+
+    # full observation buffer with first observation.
+    for k in range(config.num_stacks):
+        push_state(get_observation(), get_data())
+
+def save_video(folder, filename, frames):
+    """ Saves given frames (list of np arrays) to video file. """
+
+    logging.info("Exporting video example {}.".format(filename))
+
+    os.makedirs(folder, exist_ok=True)
+
+    channels, height, width = frames[0].shape
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    #fourcc = cv2.VideoWriter_fourcc(*'H264')
+    out = cv2.VideoWriter(os.path.join(folder, filename), fourcc, 60, (width, height))
+
+    for frame in frames:
+        # we are in CHW but want to be in HWC
+        frame = np.swapaxes(frame, 0, 2) #WHC
+        frame = np.swapaxes(frame, 0, 1) #HWC
+        out.write(frame)
+
+    out.release()
+    cv2.destroyAllWindows()
+
+
+def get_stack():
+    """ Returns [1xCxHxW], [1xCxD] """
+    return (
+        np.concatenate(observation_history)[np.newaxis, :, :, :],
+        np.concatenate(data_history)[np.newaxis, :]
+    )
+
 def train_agent():
     """ Run a test with given parameters, returns stats in dictionary. """
 
@@ -482,11 +655,12 @@ def train_agent():
     logging.critical("=" * 60)
 
     global game
+    global game_hq
     global actions
     global memory
 
     # setup doom
-    game = initialize_vizdoom(config.config_file_path)
+    initialize_vizdoom()
 
     # Action = which buttons are pressed
     n = game.get_available_buttons_size()
@@ -504,7 +678,6 @@ def train_agent():
             else:
                 f.write("\t{}:{},\n".format(k, v))
         f.write("}")
-
 
     # make a copy of the script that generated the results
     this_script = sys.argv[0]
@@ -535,8 +708,6 @@ def train_agent():
 
     time_start = time()
 
-    global last_total_shaping_reward
-
     for epoch in range(config.epochs):
 
         # clear timing stats
@@ -545,6 +716,7 @@ def train_agent():
 
         global max_q
         global max_grad
+
         max_q = 0
         max_grad = 0
 
@@ -557,8 +729,9 @@ def train_agent():
 
         logging.info("Training...")
         policy_model.train()
-        game.new_episode()
-        last_total_shaping_reward = 0
+
+        reset_agent()
+
         for learning_step in trange(config.learning_steps_per_epoch, leave=False):
 
             handle_keypress()
@@ -576,10 +749,9 @@ def train_agent():
                         perform_learning_step()
 
             if game.is_episode_finished():
-                last_total_shaping_reward = 0
-                score = game.get_total_reward()
+                score = get_final_score()
                 train_scores.append(score)
-                game.new_episode()
+                reset_agent()
                 train_episodes_finished += 1
 
         logging.info("\tTraining episodes played: {}".format(train_episodes_finished))
@@ -595,27 +767,74 @@ def train_agent():
 
         show_time_stats()
 
+        if config.export_video and (epoch % 10 == 0 or epoch == config.epochs-1):
+
+            # -----------------------------------------------------------------------------
+            logging.info("Exporting video...")
+            # -----------------------------------------------------------------------------
+
+            # activate game_hq
+            game, game_hq = game_hq, game
+
+            policy_model.eval()
+            frames = []
+
+            reset_agent()
+            step = 0
+            while not game.is_episode_finished():
+                if step % config.frame_repeat == 0:
+                    # only make decisions at the correct frame rate
+                    push_state(get_observation(), get_data())
+
+                    s,d = get_stack()
+
+                    best_action_index = get_best_action(s,d)
+                # we generate all frames for smooth video, even though
+                # actions may stick for multiple frames.
+                frames.append(game.get_state().screen_buffer)
+                _ = game.make_action(actions[best_action_index], 1)
+                step += 1
+
+            # activate game again...
+            game, game_hq = game_hq, game
+
+            try:
+                save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch+1), frames)
+            except Exception as e:
+                logging.critical("Error saving video: {}".format(e))
+
+        # -----------------------------------------------------------------------------
         logging.info("Testing...")
+        # -----------------------------------------------------------------------------
+
         policy_model.eval()
         test_scores = []
         for test_episode in trange(config.test_episodes_per_epoch, leave=False):
-            game.new_episode()
+            reset_agent()
             step = 0
             while not game.is_episode_finished():
                 handle_keypress()
                 step += 1
-                state = preprocess(game.get_state().screen_buffer)
-                state = state.reshape([1, config.num_channels * config.num_stacks, config.resolution[0], config.resolution[1]])
+
+                push_state(get_observation(), get_data())
+
+                s1, d1 = get_stack()
+
                 if random() < 0:
                     best_action_index = randint(0, len(actions) - 1)
                 else:
-                    best_action_index = get_best_action(state)
+                    best_action_index = get_best_action(s1, d1)
                 reward = env_step(actions[best_action_index], config.frame_repeat)
+                health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
                 if SHOW_REWARDS and reward > 0:
                     logging.info("Reward! {} at step {}".format(reward, step))
 
-            r = game.get_total_reward()
+            r = get_final_score()
             test_scores.append(r)
+
+        # -----------------------------------------------------------------------------
+        # logging...
+        # -----------------------------------------------------------------------------
 
         if max_q > 10000:
             logging.warning("")
@@ -658,7 +877,7 @@ def train_agent():
 
         logging.critical("Estimated remaining time: {:.0f} min ({:.2f}h total)".format(est_remaining_time/60, est_total_time/60/60))
 
-        logging.critical("Scores: {}".format(results["test_scores_mean"]))
+        logging.critical("Scores: {}".format([round(x,2) for x in results["test_scores_mean"]]))
 
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
@@ -818,7 +1037,7 @@ if __name__ == '__main__':
     # handle parameters
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
     parser.add_argument('mode', type=str, help='train | test | benchmark')
-    parser.add_argument('--num_stack', type=int, help='Agent is shown this number of frames of history.')
+    parser.add_argument('--num_stacks', type=int, help='Agent is shown this number of frames of history.')
     parser.add_argument('--learning_rate', type=float, help='Learning rate.')
     parser.add_argument('--discount_factor', type=float, help='Discount factor.')
     parser.add_argument('--epochs', type=int, help='Number of epochs to train for.')
@@ -833,6 +1052,10 @@ if __name__ == '__main__':
     parser.add_argument('--target_update', type=int, help='how often to update target network')
     parser.add_argument('--test_episodes_per_epoch', type=int, help='how many tests epsodes to run each epoch')
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
+    parser.add_argument('--health_as_reward', type=bool, help="use change in health as reward instead of default reward.")
+    parser.add_argument('--frame_repeat', type=int, help="number of frames to skip.")
+    parser.add_argument('--include_aux_rewards', type=bool, help="use auxualry reward during training (these are not counted during evaluation).")
+    parser.add_argument('--export_video', type=bool, help="exports one video per epoch showing agents performance.")
 
     args = parser.parse_args()
 

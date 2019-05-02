@@ -7,9 +7,13 @@ import subprocess
 import os
 import sys
 
+def clean(s):
+    valid_chars = '-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    return "".join([x if x in valid_chars else "_" for x in s])
+
 def get_job_key(args):
     params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
-    return " ".join("{}={}".format(k, v) for k, v in params)+" "
+    return " ".join("{}={}".format(clean(k), clean(str(v))) for k, v in params)+" "
 
 
 def count_jobs(args):
@@ -67,6 +71,31 @@ elif args.trial == "trial_6":
                 'learning_rate':3e-5
              }
         )
+elif args.trial == "trial_7":
+    for num_stacks in [1,2,4]:
+        jobs.append(
+            {
+                'target_update': 100,
+                'num_stacks': num_stacks,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering.cfg",
+                'test_episodes_per_epoch':100,
+            }
+        )
+elif args.trial == "trial_8b":
+    for num_stacks in [1, 2, 4]:
+        jobs.append(
+            {
+                'target_update': 100,
+                'num_stacks': num_stacks,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':200,
+                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+            }
+    )
 elif args.trial == "test_envs":
     for env in [
         "scenarios/basic.cfg",
@@ -75,11 +104,11 @@ elif args.trial == "test_envs":
         "scenarios/deathmatch.cfg",
         "scenarios/defend_the_center.cfg",
         "scenarios/defend_the_line.cfg",
-        "scenarios/health_gathering.cfg"
-        "scenarios/health_gathering_supreme.cfg"
-        "scenarios/predict_position.cfg"
-        "scenarios/rocket_basic.cfg"
-        "scenarios/take_cover.cfg"
+        "scenarios/health_gathering.cfg",
+        "scenarios/health_gathering_supreme.cfg",
+        "scenarios/predict_position.cfg",
+        "scenarios/rocket_basic.cfg",
+        "scenarios/take_cover.cfg",
     ]:
         jobs.append(
             {
