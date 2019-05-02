@@ -12,9 +12,10 @@ keras implementation of some maps. https://github.com/flyyufelix/VizDoom-Keras-R
 # force single threads, makes progream more CPU efficent but doesn't really hurt performance.
 # this does seem to affect pytorch cpu speed a bit though.
 import os
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ['OPENBLAS_NUM_THREADS'] = "2"
-os.environ['MKL_NUM_THREADS'] = "2"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ['OPENBLAS_NUM_THREADS'] = "1"
+os.environ['MKL_NUM_THREADS'] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 import vizdoom as vzd
 import itertools as it
@@ -198,7 +199,15 @@ class Config:
 
     def rename_job_folder(self):
         """ moves job to completed folder. """
-        os.rename(self.job_folder, self.final_job_folder)
+        for _ in range(3):
+            try:
+                os.rename(self.job_folder, self.final_job_folder)
+                break
+            except Exception as e:
+                print("\nFailed to rename job folder: {}\n".format(e))
+                sleep(60)  # give Dropbox a chance to sync up.
+        else:
+            print("Error moving completed job to {}.".format(config.final_job_folder))
 
 def track_time_taken(method):
 
@@ -895,18 +904,9 @@ def train_agent():
         log.close()
         logging.getLogger().removeHandler(log)
 
-    sleep(10)           # give Dropbox a chance to sync up, and logs etc to finish up.
-
-    for _ in range(3):
-        try:
-            config.rename_job_folder()
-            break
-        except Exception as e:
-            print("\nFailed to rename job folder: {}\n".format(e))
-            sleep(60)  # give Dropbox a chance to sync up.
-    else:
-        print("Error moving completed job to {}.".format(config.final_job_folder))
-
+    if config.mode == "train":
+        sleep(10)  # give Dropbox a chance to sync up, and logs etc to finish up.
+        config.rename_job_folder()
 
     return results
 
@@ -952,6 +952,7 @@ def run_benchmark():
     config.resolution = (120, 45)
     config.verbose=False
     config.config_file_path = "scenarios/basic.cfg"
+    config.export_video = False
 
     # apply any custom arguments
     config.apply_args(args)
@@ -1036,7 +1037,7 @@ if __name__ == '__main__':
 
     # handle parameters
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
-    parser.add_argument('mode', type=str, help='train | test | benchmark')
+    parser.add_argument('mode', type=str, help='train | test | benchmark | info')
     parser.add_argument('--num_stacks', type=int, help='Agent is shown this number of frames of history.')
     parser.add_argument('--learning_rate', type=float, help='Learning rate.')
     parser.add_argument('--discount_factor', type=float, help='Discount factor.')
@@ -1059,6 +1060,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    config.mode = config.mode.lower()
+
     config.apply_args(args)
     config.make_job_folder()
 
@@ -1076,6 +1079,10 @@ if __name__ == '__main__':
     # apply mode
     if config.mode == "train":
         run_training()
+    elif config.mode == "info":
+        print("PyVorch:", torch.__version__)
+        print("Device:", config.device)
+        np.__config__.show()
     elif config.mode == "benchmark":
         run_benchmark()
     elif config.mode == "test":
