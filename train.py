@@ -296,10 +296,10 @@ class ReplayMemory:
     def get_sample(self, sample_size):
         i = sample(range(0, self.size), sample_size)
         return (
-            np.divide(self.s1[i], 255, dtype="float32"),
+            self.s1[i],
             self.d1[i],
             self.a[i],
-            np.divide(self.s2[i], 255, dtype="float32"),
+            self.s2[i],
             self.d2[i],
             self.isterminal[i],
             self.r[i]
@@ -330,6 +330,8 @@ class Net(nn.Module):
 
         x = x.to(config.device)   # Bx12x120x45
         d = d.to(config.device)   # Bx4x3
+
+        x = x.float()/255         # convert from unit8 to float32 format
 
         x = F.relu(self.conv1(x)) # Bx32x29x10
         x = F.relu(self.conv2(x)) # Bx32x13x3
