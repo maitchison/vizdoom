@@ -113,7 +113,7 @@ class Config:
         self.resolution = (120, 45)
         self.verbose = False
         self.config_file_path = "scenarios/health_gathering.cfg"
-        self.uid = uuid.uuid4().hex
+        self.job_id = uuid.uuid4().hex[:16]
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.experiment = "experiments"
         self.computer_specs = platform.uname()
@@ -150,7 +150,9 @@ class Config:
         else:
             experiment = self.experiment
 
-        return os.path.join("runs", experiment, "_"+self.job_subfolder)
+        prefix = "_" if config.mode == "train" else ""
+
+        return os.path.join("runs", experiment, prefix + self.job_subfolder)
 
     @property
     def final_job_folder(self):
@@ -170,20 +172,16 @@ class Config:
         return "{} [{}]".format(self.job_name, self.job_id)
 
     @property
-    def job_id(self):
-        return self.uid[:16]
-
-    @property
     def scenario(self):
         return os.path.splitext(os.path.basename(self.config_file_path))[0]
 
     @property
     def start_eps_decay(self):
-        return min(self.total_steps * 0.1, self.learning_steps_per_epoch * 10)
+        return min(self.total_steps * 0.1, self.learning_steps_per_epoch * 10, 10000)
 
     @property
     def end_eps_decay(self):
-        return min(self.total_steps * 0.6, self.learning_steps_per_epoch * 60)
+        return min(self.total_steps * 0.6, self.learning_steps_per_epoch * 60, 100000)
 
     @property
     def total_steps(self):
@@ -546,6 +544,7 @@ def initialize_vizdoom():
 
     global game
     global game_hq
+    global actions
 
     if game is not None:
         game.close()
@@ -570,6 +569,10 @@ def initialize_vizdoom():
         game_hq.set_screen_format(vzd.ScreenFormat.CRCGCB)
         game_hq.set_screen_resolution(preview_screen_resolution)
         game_hq.init()
+
+    # Action = which buttons are pressed
+    n = game.get_available_buttons_size()
+    actions = [list(a) for a in it.product([0, 1], repeat=n)]
 
     logging.info("Doom initialized.")
 
@@ -613,8 +616,10 @@ def handle_keypress():
             logging.critical("\nInvalid input {}.\n".format(c))
 
 
-def get_final_score():
-    if config.health_as_reward:
+def get_final_score(health_as_reward=None):
+    if health_as_reward is None:
+        health_as_reward = config.health_as_reward
+    if health_as_reward:
         # use integral of health over time assuming agent would have lasted 2100 steps.
         final_score = sum(health_history) / (2100 / config.frame_repeat)
     else:
@@ -670,6 +675,77 @@ def get_stack():
         np.concatenate(data_history)[np.newaxis, :]
     )
 
+def eval_model():
+
+    policy_model.eval()
+    test_scores = []
+    test_scores_health = []
+    test_scores_reward = []
+
+    for test_episode in trange(config.test_episodes_per_epoch, leave=False):
+        reset_agent()
+        step = 0
+        while not game.is_episode_finished():
+            handle_keypress()
+            step += 1
+
+            push_state(get_observation(), get_data())
+
+            s1, d1 = get_stack()
+
+            if random() < 0:
+                best_action_index = randint(0, len(actions) - 1)
+            else:
+                best_action_index = get_best_action(s1, d1)
+            reward = env_step(actions[best_action_index], config.frame_repeat)
+            health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
+            if SHOW_REWARDS and reward > 0:
+                logging.info("Reward! {} at step {}".format(reward, step))
+
+        # make sure to record both the reward score, and the health as reward score.
+        test_scores.append(get_final_score())
+        test_scores_health.append(get_final_score(health_as_reward=True))
+        test_scores_reward.append(get_final_score(health_as_reward=False))
+
+    return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
+
+
+def export_video():
+
+    global game
+    global game_hq
+
+    # activate game_hq
+    game, game_hq = game_hq, game
+
+    policy_model.eval()
+    frames = []
+
+    reset_agent()
+    step = 0
+    while not game.is_episode_finished():
+        if step % config.frame_repeat == 0:
+            # only make decisions at the correct frame rate
+            push_state(get_observation(), get_data())
+
+            s, d = get_stack()
+
+            best_action_index = get_best_action(s, d)
+        # we generate all frames for smooth video, even though
+        # actions may stick for multiple frames.
+        frames.append(game.get_state().screen_buffer)
+        _ = game.make_action(actions[best_action_index], 1)
+        step += 1
+
+    # activate game again...
+    game, game_hq = game_hq, game
+
+    try:
+        save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch + 1), frames)
+    except Exception as e:
+        logging.critical("Error saving video: {}".format(e))
+
+
 def train_agent():
     """ Run a test with given parameters, returns stats in dictionary. """
 
@@ -677,17 +753,11 @@ def train_agent():
     logging.critical("Running Experiment {} {} [{}]".format(config.experiment, config.job_name, config.job_id))
     logging.critical("=" * 60)
 
-    global game
-    global game_hq
     global actions
     global memory
 
     # setup doom
     initialize_vizdoom()
-
-    # Action = which buttons are pressed
-    n = game.get_available_buttons_size()
-    actions = [list(a) for a in it.product([0, 1], repeat=n)]
 
     # Create replay memory which will store the transitions
     memory = ReplayMemory(capacity=config.replay_memory_size)
@@ -708,6 +778,8 @@ def train_agent():
 
     results = {}
     results["test_scores"] = []
+    results["test_scores_health"] = []
+    results["test_scores_reward"] = []
     results["test_scores_mean"] = []
     results["config"] = config
     results["args"] = config.args
@@ -791,69 +863,11 @@ def train_agent():
         show_time_stats()
 
         if config.export_video and (epoch % 10 == 0 or epoch == config.epochs-1):
-
-            # -----------------------------------------------------------------------------
             logging.info("Exporting video...")
-            # -----------------------------------------------------------------------------
+            export_video()
 
-            # activate game_hq
-            game, game_hq = game_hq, game
-
-            policy_model.eval()
-            frames = []
-
-            reset_agent()
-            step = 0
-            while not game.is_episode_finished():
-                if step % config.frame_repeat == 0:
-                    # only make decisions at the correct frame rate
-                    push_state(get_observation(), get_data())
-
-                    s,d = get_stack()
-
-                    best_action_index = get_best_action(s,d)
-                # we generate all frames for smooth video, even though
-                # actions may stick for multiple frames.
-                frames.append(game.get_state().screen_buffer)
-                _ = game.make_action(actions[best_action_index], 1)
-                step += 1
-
-            # activate game again...
-            game, game_hq = game_hq, game
-
-            try:
-                save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch+1), frames)
-            except Exception as e:
-                logging.critical("Error saving video: {}".format(e))
-
-        # -----------------------------------------------------------------------------
         logging.info("Testing...")
-        # -----------------------------------------------------------------------------
-
-        policy_model.eval()
-        test_scores = []
-        for test_episode in trange(config.test_episodes_per_epoch, leave=False):
-            reset_agent()
-            step = 0
-            while not game.is_episode_finished():
-                handle_keypress()
-                step += 1
-
-                push_state(get_observation(), get_data())
-
-                s1, d1 = get_stack()
-
-                if random() < 0:
-                    best_action_index = randint(0, len(actions) - 1)
-                else:
-                    best_action_index = get_best_action(s1, d1)
-                reward = env_step(actions[best_action_index], config.frame_repeat)
-                health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
-                if SHOW_REWARDS and reward > 0:
-                    logging.info("Reward! {} at step {}".format(reward, step))
-
-            r = get_final_score()
-            test_scores.append(r)
+        test_scores, test_scores_health, test_scores_reward = eval_model()
 
         # -----------------------------------------------------------------------------
         # logging...
@@ -888,6 +902,8 @@ def train_agent():
 
         results["test_scores_mean"].append(test_scores.mean())
         results["test_scores"].append(test_scores)
+        results["test_scores_health"].append(test_scores_health)
+        results["test_scores_reward"].append(test_scores_reward)
 
         elapsed_time = (time() - time_start)
 
@@ -905,10 +921,10 @@ def train_agent():
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
         save_results(results,"_partial")
-        save_model("_{0:03d}".format(epoch+1), "models")
+        save_model(epoch+1)
 
     save_results(results, "_complete")
-    save_model("_complete")
+    save_model()
 
     game.close()
 
@@ -932,16 +948,97 @@ def save_results(results, suffix=""):
     generate_graphs(results)
 
 
-def save_model(suffix="", subfolder=""):
-    # save the model
-    if subfolder != "":
-        os.makedirs(os.path.join(config.job_folder, subfolder), exist_ok=True)
-    torch.save(target_model, os.path.join(config.job_folder, subfolder, "model"+suffix+".dat"))
+def save_model(epoch=None):
+    if epoch is None:
+        torch.save(policy_model, os.path.join(config.job_folder, "model_complete.dat"))
+    else:
+        filename = "model_{0:03d}.dat".format(epoch)
+        os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
+        torch.save(policy_model, os.path.join(config.job_folder, "models", filename))
 
+def restore_model(epoch=None):
+    """ restores model from checkpoint. """
+    if epoch is None:
+        model_path = os.path.join(config.job_folder, "model_complete.dat")
+    else:
+        filename = "model_{0:03d}.dat".format(epoch)
+        model_path = os.path.join(config.job_folder, "models", filename)
+
+    global policy_model
+    global target_model
+
+    target_model = Net(len(actions))
+    policy_model = Net(len(actions))
+
+    policy_model = torch.load(model_path)
+    target_model = torch.load(model_path)
+
+    if config.device.lower() == "cuda":
+        for model in [target_model, policy_model]:
+            model.cuda()
+
+    target_model.eval()
 
 def run_training():
     """ Runs an experiment with given parameters. """
     train_agent()
+
+def run_evaluation():
+    """ (re)runs model evaluations. """
+
+    # get config settings from previous folder
+    global config
+    config_filename = os.path.join(config.job_folder, "results_partial.dat")
+    config = pickle.load(open(config_filename,"rb"))["config"]
+
+    # old config files didn't have job_id as an attribute...
+    if 'job_id' not in config.__dict__:
+        config.job_id = config.uid[:16]
+
+    config.mode = "eval"
+
+    initialize_vizdoom()
+
+    results = {}
+    results["test_scores"] = []
+    results["test_scores_health"] = []
+    results["test_scores_reward"] = []
+    results["test_scores_mean"] = []
+    results["config"] = config
+    results["args"] = config.args
+
+    time_start = time()
+
+    for epoch in range(config.epochs):
+        restore_model(epoch+1)
+        test_scores, test_scores_health, test_scores_reward = eval_model()
+
+        results["test_scores_mean"].append(test_scores.mean())
+        results["test_scores"].append(test_scores)
+        results["test_scores_health"].append(test_scores_health)
+        results["test_scores_reward"].append(test_scores_reward)
+
+        elapsed_time = (time() - time_start)
+
+        logging.info("\tTotal elapsed time: {:.2f} min".format(elapsed_time / 60.0))
+
+        progress = ((epoch+1) / config.epochs)
+
+        est_total_time = elapsed_time / progress
+        est_remaining_time = est_total_time - elapsed_time
+
+        logging.critical("Estimated remaining time: {:.0f} min ({:.2f}h total)".format(est_remaining_time/60, est_total_time/60/60))
+
+        logging.critical("Scores: {}".format([round(x,2) for x in results["test_scores_mean"]]))
+
+        results["elapsed_time"] = ((time() - time_start) / 60.0)
+
+        save_results(results,"_partial")
+        save_model(epoch+1)
+
+    save_results(results, "_complete")
+
+
 
 def run_benchmark():
     """ Runs a standard benchmark to see how fast learning happens. """
@@ -1051,7 +1148,7 @@ if __name__ == '__main__':
 
     # handle parameters
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
-    parser.add_argument('mode', type=str, help='train | test | benchmark | info')
+    parser.add_argument('mode', type=str, help='train | test | benchmark | info | eval')
     parser.add_argument('--num_stacks', type=int, help='Agent is shown this number of frames of history.')
     parser.add_argument('--learning_rate', type=float, help='Learning rate.')
     parser.add_argument('--discount_factor', type=float, help='Discount factor.')
@@ -1072,6 +1169,7 @@ if __name__ == '__main__':
     parser.add_argument('--frame_repeat', type=int, help="number of frames to skip.")
     parser.add_argument('--include_aux_rewards', type=bool, help="use auxualry reward during training (these are not counted during evaluation).")
     parser.add_argument('--export_video', type=bool, help="exports one video per epoch showing agents performance.")
+    parser.add_argument('--job_id', type=str, help="unique id for job.")
 
     args = parser.parse_args()
 
@@ -1092,7 +1190,9 @@ if __name__ == '__main__':
     logging.info("Using device: {}".format(config.device))
 
     # apply mode
-    if config.mode == "train":
+    if config.mode == "eval":
+        run_evaluation()
+    elif config.mode == "train":
         run_training()
     elif config.mode == "info":
         print("PyVorch:", torch.__version__)

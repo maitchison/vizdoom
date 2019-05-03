@@ -106,6 +106,35 @@ elif args.trial == "trial_9":
                 'test_episodes_per_epoch':25,   #faster to train, can always run more later...
             })
     )
+elif args.trial == "trial_10":
+    for update_every in [2, 1, 1/2]:
+        jobs.append(
+            ("update_every={}".format(update_every), {
+                'target_update': 100,
+                'num_stacks': 4,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'update_every': update_every,
+                'epochs':100,
+                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+            })
+    )
+
+elif args.trial == "trial_11":
+    # very close to original paper...
+    jobs.append(
+        ("original", {
+            'target_update': 100,
+            'num_stacks': 4,
+            'learning_rate': 0.00001,
+            'health_as_reward': False,
+            'config_file_path': "scenarios/health_gathering_supreme.cfg",
+            'learning_steps_per_epoch': 5000,
+            'epochs':200,
+            'test_episodes_per_epoch':20,
+        })
+    )
 elif args.trial == "test_envs":
     for env in [
         "scenarios/basic.cfg",
