@@ -121,6 +121,7 @@ class Config:
         self.include_aux_rewards = True
         self.health_as_reward = False
         self.export_video = True
+        self.job_name = "job"
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -177,17 +178,12 @@ class Config:
         return os.path.splitext(os.path.basename(self.config_file_path))[0]
 
     @property
-    def job_name(self):
-        """ Describes the job's parameters. """
-        return get_job_key(args.__dict__)
-
-    @property
     def start_eps_decay(self):
-        return self.total_steps * 0.1
+        return min(self.total_steps * 0.1, self.learning_steps_per_epoch * 10)
 
     @property
     def end_eps_decay(self):
-        return self.total_steps * 0.6
+        return min(self.total_steps * 0.6, self.learning_steps_per_epoch * 60)
 
     @property
     def total_steps(self):
@@ -247,6 +243,9 @@ def preprocess(img):
     img = np.swapaxes(img, 0, 2)
     img = np.swapaxes(img, 1, 2)
 
+    # convert from float32 to uint8
+    img = np.uint8(img * 255)
+
     global SHOW_FIRST_FRAME
     if SHOW_FIRST_FRAME:
         original_img = np.swapaxes(original_img, 0, 2)
@@ -277,13 +276,13 @@ class ReplayMemory:
 
     def add_transition(self, s1, d1, action, s2, d2, isterminal, reward):
 
-        s1 = np.uint8(s1 * 255)
+        assert s1.dtype == np.uint8, "Please convert frames to uint8 before adding to experience replay."
+        assert s2 is None or s2.dtype == np.uint8, "Please convert frames to uint8 before adding to experience replay."
 
         self.s1[self.pos, :, :, :] = s1[0]
         self.d1[self.pos] = d1
         self.a[self.pos] = action
         if not isterminal:
-            s2 = np.uint8(s2 * 255)
             self.s2[self.pos, :, :, :] = s2[0]
             self.d2[self.pos] = d2
         self.isterminal[self.pos] = isterminal
@@ -312,6 +311,14 @@ def prod(X):
         y *= x
     return y
 
+def save_frames(filename, x):
+    print("Saving {}".format(filename))
+    print("Shape:",x.shape)
+    print("min/max/mean/median",print(np.min(x), np.max(x), np.mean(x), np.median(x)))
+    for i in range(len(x)):
+        plt.imsave("{}-{:03d}.png".format(filename,i+1), x[i])
+
+
 class Net(nn.Module):
 
     def __init__(self, available_actions_count):
@@ -328,10 +335,15 @@ class Net(nn.Module):
     @track_time_taken
     def forward(self, x, d):
 
-        x = x.to(config.device)   # Bx12x120x45
+        x = x.to(config.device)   # BxCx120x45
         d = d.to(config.device)   # Bx4x3
 
         x = x.float()/255         # convert from unit8 to float32 format
+
+        # for debuging, save frames
+        #frame_index = int(d.cpu().data.numpy()[0][1])
+        #frames = x.cpu().data.numpy().reshape(-1,config.resolution[0], config.resolution[1])
+        #save_frames("frame-{0:03d}".format(frame_index), frames)
 
         x = F.relu(self.conv1(x)) # Bx32x29x10
         x = F.relu(self.conv2(x)) # Bx32x13x3
@@ -1052,6 +1064,7 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', type=bool, help='enable verbose output')
     parser.add_argument('--update_every', type=float, help='apply update every x learning steps')
     parser.add_argument('--experiment', type=str, help='name of subfolder to put experiment in.')
+    parser.add_argument('--job_name', type=str, help='name of job.')
     parser.add_argument('--target_update', type=int, help='how often to update target network')
     parser.add_argument('--test_episodes_per_epoch', type=int, help='how many tests epsodes to run each epoch')
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
