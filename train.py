@@ -394,7 +394,7 @@ def get_target_q_values(s,d):
     global max_q
     s = Variable(torch.from_numpy(s))
     d = Variable(torch.from_numpy(d))
-    q = target_model(s,d).detach()
+    q = target_model(s,d)
     max_q = max(max_q, float(torch.max(q)))
     return q
 
@@ -422,7 +422,7 @@ def perform_learning_step():
 
         q = get_q_values(s2, d2).data.numpy()
         q2 = np.max(q, axis=1)
-        target_q = get_target_q_values(s1, d1).data.numpy()
+        target_q = get_target_q_values(s1, d1).data.numpy() if config.target_update > 0 else get_q_values(s1, d1).data.numpy()
         # target differs from q only for the selected action. The following means:
         # target_Q(s,a) = r + gamma * max Q(s2,_) if isterminal else r
 
@@ -433,7 +433,7 @@ def perform_learning_step():
         prev_loss = 0.95 * prev_loss + 0.05 * float(this_loss)
 
         # update target net every so often.
-        if learning_steps % config.target_update == 0:
+        if config.target_update > 0 and learning_steps % config.target_update == 0:
             update_target()
 
 
@@ -601,7 +601,7 @@ def handle_keypress():
             show_time_stats(logging.CRITICAL)
         elif c == "i":
             print()
-            logging.critical("***** ID {} [{}]".format(config.job_name, config.job_id))
+            logging.critical("***** ID {} - {} [{}]".format(config.experiment, config.job_name, config.job_id))
         elif c == "h":
             print()
             logging.critical("**** H for help")
@@ -710,7 +710,7 @@ def eval_model():
     return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
 
 
-def export_video():
+def export_video(epoch):
 
     global game
     global game_hq
@@ -741,7 +741,7 @@ def export_video():
     game, game_hq = game_hq, game
 
     try:
-        save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch + 1), frames)
+        save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch), frames)
     except Exception as e:
         logging.critical("Error saving video: {}".format(e))
 
@@ -862,9 +862,9 @@ def train_agent():
 
         show_time_stats()
 
-        if config.export_video and (epoch % 10 == 0 or epoch == config.epochs-1):
+        if config.export_video and ((epoch+1) % 10 == 0 or epoch == config.epochs-1) or epoch == 0:
             logging.info("Exporting video...")
-            export_video()
+            export_video(epoch+1)
 
         logging.info("Testing...")
         test_scores, test_scores_health, test_scores_reward = eval_model()

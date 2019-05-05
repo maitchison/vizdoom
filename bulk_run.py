@@ -13,7 +13,7 @@ def clean(s):
 
 def get_job_key(args):
     params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
-    return " ".join("{}={}".format(clean(k), clean(str(v))) for k, v in params)+" "
+    return " ".join("{}={}".format(clean(k), clean(str(v))) for k, v in params)
 
 
 def count_jobs(experiment, job_name):
@@ -21,7 +21,7 @@ def count_jobs(experiment, job_name):
     # count the number folders that have our experiment name and arguments.
     counter = 0
     for r, d, f in os.walk(os.path.join("runs", experiment)):
-        if job_name+" " in os.path.basename(r):
+        if job_name+" [" in os.path.basename(r):
             counter += 1
 
     return counter
@@ -47,7 +47,7 @@ def show_job_count(experiment, job_name, repeats):
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run')
 parser.add_argument('trial', type=str, help='Trial to run')
-parser.add_argument('--repeats', type=int, default=3, help='Number of times to repeat each trial.')
+parser.add_argument('--repeats', type=int, default=2, help='Number of times to repeat each trial.')
 
 args = parser.parse_args()
 
@@ -103,11 +103,11 @@ elif args.trial == "trial_9":
                 'health_as_reward': True,
                 'config_file_path': "scenarios/health_gathering_supreme.cfg",
                 'epochs':200,
-                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+                'test_episodes_per_epoch':20,   #faster to train, can always run more later...
             })
     )
 elif args.trial == "trial_10":
-    for update_every in [2, 1, 1/2]:
+    for update_every in [4, 2, 1, 1/2, 1/4]:
         jobs.append(
             ("update_every={}".format(update_every), {
                 'target_update': 100,
@@ -116,16 +116,15 @@ elif args.trial == "trial_10":
                 'health_as_reward': True,
                 'config_file_path': "scenarios/health_gathering_supreme.cfg",
                 'update_every': update_every,
-                'epochs':100,
-                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+                'epochs':200,
+                'test_episodes_per_epoch':20,   #faster to train, can always run more later...
             })
     )
-
 elif args.trial == "trial_11":
     # very close to original paper...
     jobs.append(
-        ("original", {
-            'target_update': 100,
+        ("original (no ta)", {
+            'target_update': -1,
             'num_stacks': 4,
             'learning_rate': 0.00001,
             'health_as_reward': False,
@@ -135,6 +134,35 @@ elif args.trial == "trial_11":
             'test_episodes_per_epoch':20,
         })
     )
+elif args.trial == "trial_12":
+    # see how target update effects things
+    for target_update in [-1, 10, 25, 50, 100, 200, 500, 1000, 10000]:
+        jobs.append(
+            ("target_update={}".format(target_update), {
+                'target_update': target_update,
+                'num_stacks': 4,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':200,
+                'test_episodes_per_epoch':20,
+            })
+        )
+elif args.trial == "trial_13":
+    # see how exp buffer effects things
+    for replay_memory_size in [100, 500, 1000, 2000, 5000, 10000, 20000]:
+        jobs.append(
+            ("replay_memory_size={}".format(replay_memory_size), {
+                'replay_memory_size': replay_memory_size,
+                'target_update': 100,
+                'num_stacks': 4,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':200,
+                'test_episodes_per_epoch':20,
+            })
+        )
 elif args.trial == "test_envs":
     for env in [
         "scenarios/basic.cfg",
@@ -163,19 +191,29 @@ else:
     print("Invalid trial name '{}'".format(args.trial))
     exit(-1)
 
-for job_name, job_args in jobs:
-    if args.mode == "count":
+
+if args.mode == "count":
+    for job_name, job_args in jobs:
         show_job_count(
             experiment=args.trial,
             job_name=job_name,
             repeats=args.repeats
         )
-    elif args.mode == "run":
+elif args.mode == "run":
+    # get 1 pass on each job first, then head back and do the repeat runs...
+    for job_name, job_args in jobs:
+        process_job(
+            experiment=args.trial,
+            job_name=job_name,
+            repeats=1,
+            **job_args
+        )
+    for job_name, job_args in jobs:
         process_job(
             experiment=args.trial,
             job_name=job_name,
             repeats=args.repeats,
             **job_args
         )
-    else:
-        print("Invalid mode {}".format(args.mode))
+else:
+    print("Invalid mode {}".format(args.mode))
