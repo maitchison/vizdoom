@@ -112,6 +112,7 @@ class Config:
         self.frame_repeat = 10
         self.resolution = (120, 45)
         self.verbose = False
+        self.max_pool = False
         self.config_file_path = "scenarios/health_gathering.cfg"
         self.job_id = uuid.uuid4().hex[:16]
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -321,13 +322,22 @@ class Net(nn.Module):
 
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(config.num_channels * config.num_stacks, 32, kernel_size=7, stride=4) #3 color channels, 4 previous frames.
-        self.bn1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=5, stride=2)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1)
-        self.bn3 = nn.BatchNorm2d(32)
-        self.fc1 = nn.Linear(prod([32,11,1]) + aux_inputs * config.num_stacks, config.hidden_units)
+        self.conv1 = nn.Conv2d(
+            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
+            kernel_size=7,
+            stride=1 if config.max_pool else 4
+        )
+        self.conv2 = nn.Conv2d(
+            32, 32, kernel_size=5,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv3 = nn.Conv2d(
+            32, 32, kernel_size=3,
+            stride=1
+        )
+        # maxpool and stride have slightly different final shapes.
+        final_shape = [32, 10, 1] if config.max_pool else [32, 11, 1]
+        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
     @track_time_taken
@@ -344,7 +354,11 @@ class Net(nn.Module):
         #save_frames("frame-{0:03d}".format(frame_index), frames)
 
         x = F.relu(self.conv1(x)) # Bx32x29x10
+        if config.max_pool:
+            x = F.max_pool2d(x, 4, padding=1)
         x = F.relu(self.conv2(x)) # Bx32x13x3
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
         x = F.relu(self.conv3(x)) # Bx32x11x1
         x = x.view(-1, prod(x.shape[1:])) # Bx352
         x = torch.cat((x, d), 1)  # Bx355
@@ -639,6 +653,7 @@ def reset_agent():
     last_total_shaping_reward = 0
     health_history = [100]
 
+    game.set_seed(randint(1, 99999999))  # make sure we get a different start each time.
     game.new_episode()
 
     # full observation buffer with first observation.
@@ -693,10 +708,8 @@ def eval_model():
 
             s1, d1 = get_stack()
 
-            if random() < 0:
-                best_action_index = randint(0, len(actions) - 1)
-            else:
-                best_action_index = get_best_action(s1, d1)
+            best_action_index = get_best_action(s1, d1)
+
             reward = env_step(actions[best_action_index], config.frame_repeat)
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
             if SHOW_REWARDS and reward > 0:
@@ -746,8 +759,9 @@ def export_video(epoch):
         logging.critical("Error saving video: {}".format(e))
 
 
-def train_agent():
+def train_agent(continue_from_save = False):
     """ Run a test with given parameters, returns stats in dictionary. """
+
 
     logging.critical("=" * 60)
     logging.critical("Running Experiment {} {} [{}]".format(config.experiment, config.job_name, config.job_id))
@@ -787,8 +801,21 @@ def train_agent():
     global target_model
     global policy_model
 
-    target_model = Net(len(actions))
-    policy_model = Net(len(actions))
+    start_epoch = 0
+
+    if continue_from_save:
+        # load config
+        pass
+        # load model
+        pass
+        # load results
+        # set globals (learning_step)
+        # also set start_epoch
+        pass
+    else:
+        target_model = Net(len(actions))
+        policy_model = Net(len(actions))
+
     if config.device.lower() == "cuda":
         for model in [target_model, policy_model]:
             model.cuda()
@@ -803,7 +830,7 @@ def train_agent():
 
     time_start = time()
 
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
 
         # clear timing stats
         global time_stats
@@ -862,7 +889,7 @@ def train_agent():
 
         show_time_stats()
 
-        if config.export_video and ((epoch+1) % 10 == 0 or epoch == config.epochs-1) or epoch == 0:
+        if config.export_video and (((epoch+1) % 10 == 0 or epoch == config.epochs-1) or epoch == 0):
             logging.info("Exporting video...")
             export_video(epoch+1)
 
@@ -978,10 +1005,6 @@ def restore_model(epoch=None):
             model.cuda()
 
     target_model.eval()
-
-def run_training():
-    """ Runs an experiment with given parameters. """
-    train_agent()
 
 def run_evaluation():
     """ (re)runs model evaluations. """
@@ -1142,6 +1165,14 @@ def enable_logging():
     console_logger.setLevel(logging.INFO if config.verbose else logging.ERROR)
     logging.getLogger().addHandler(console_logger)
 
+def str2bool(v):
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 if __name__ == '__main__':
 
     config = Config()
@@ -1158,18 +1189,19 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_units', type=int, help='Number of hidden units in model.')
     parser.add_argument('--batch_size', type=int, help='Samples per minibatch.')
     parser.add_argument('--device', type=str, help='CPU | CUDA')
-    parser.add_argument('--verbose', type=bool, help='enable verbose output')
+    parser.add_argument('--verbose', type=str2bool, help='enable verbose output')
     parser.add_argument('--update_every', type=float, help='apply update every x learning steps')
     parser.add_argument('--experiment', type=str, help='name of subfolder to put experiment in.')
     parser.add_argument('--job_name', type=str, help='name of job.')
     parser.add_argument('--target_update', type=int, help='how often to update target network')
     parser.add_argument('--test_episodes_per_epoch', type=int, help='how many tests epsodes to run each epoch')
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
-    parser.add_argument('--health_as_reward', type=bool, help="use change in health as reward instead of default reward.")
+    parser.add_argument('--health_as_reward', type=str2bool, help="use change in health as reward instead of default reward.")
     parser.add_argument('--frame_repeat', type=int, help="number of frames to skip.")
-    parser.add_argument('--include_aux_rewards', type=bool, help="use auxualry reward during training (these are not counted during evaluation).")
-    parser.add_argument('--export_video', type=bool, help="exports one video per epoch showing agents performance.")
+    parser.add_argument('--include_aux_rewards', type=str2bool, help="use auxualry reward during training (these are not counted during evaluation).")
+    parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
+    parser.add_argument('--max_pool', type=str2bool, help="enable maxpooling.")
 
     args = parser.parse_args()
 
@@ -1193,7 +1225,9 @@ if __name__ == '__main__':
     if config.mode == "eval":
         run_evaluation()
     elif config.mode == "train":
-        run_training()
+        train_agent()
+    elif config.mode == "continue":
+        train_agent(continue_from_save=True)
     elif config.mode == "info":
         print("PyVorch:", torch.__version__)
         print("Device:", config.device)
