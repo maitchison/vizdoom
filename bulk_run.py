@@ -29,7 +29,7 @@ def count_jobs(experiment, job_name):
 def run_job(experiment, job_name, args):
     """ Runs job with given arguments. """
     python = "python3" if sys.platform in ["linux", "linux2"] else "python"
-    subprocess.call([python,"train.py","train"] +
+    subprocess.call([python,args.train_script,"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
                     ["--{}={}".format(k,v) for k,v in args.items()])
@@ -48,6 +48,7 @@ parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run')
 parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=2, help='Number of times to repeat each trial.')
+parser.add_argument('--train_script', type=str, default="train.py", help='Script to use to train.')
 
 args = parser.parse_args()
 
@@ -260,20 +261,40 @@ elif args.trial == "trial_17":
 elif args.trial == "trial_18":
     # stride vs max_pool
     for max_pool in [True, False]:
-        for target_update in [-1, 100]:
+        jobs.append(
+            ("max_pool={}".format(max_pool), {
+                'target_update': 100,
+                'update_every': 2,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs': 200,
+                'max_pool': max_pool,
+                'test_episodes_per_epoch': 10,  # faster to train, can always run more later...
+            }))
+
+
+elif args.trial == "exp_2":
+    for update_every in [4, 2, 1, 1/2]:                                             # todo: include (1/4)
+        for learning_rate in [1e-4 * update_every * 2 ** x for x in [-2, -1, 0, 1]]:
             jobs.append(
-                ("max_pool={} ta={}".format(max_pool, target_update), {
-                    'target_update': target_update,
-                    'num_stacks': 4,
-                    'learning_rate': 0.00001,
-                    'health_as_reward': False,
-                    'config_file_path': "scenarios/health_gathering_supreme.cfg",
-                    'learning_steps_per_epoch': 5000,
-                    'epochs': 200,
-                    'max_pool': max_pool,
-                    'test_episodes_per_epoch': 20,
-                })
-            )
+                ("update_every={} learning_rate={}".format(update_every, learning_rate), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 5000,
+                'update_every': update_every,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': learning_rate,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':50,
+                'max_pool': True,
+                'test_episodes_per_epoch':100,   #faster to train, can always run more later...
+            }))
 
 
 elif args.trial == "test_envs":
