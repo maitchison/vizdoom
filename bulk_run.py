@@ -26,19 +26,19 @@ def count_jobs(experiment, job_name):
 
     return counter
 
-def run_job(experiment, job_name, args):
+def run_job(experiment, job_name, kwargs):
     """ Runs job with given arguments. """
     python = "python3" if sys.platform in ["linux", "linux2"] else "python"
     subprocess.call([python,args.train_script,"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
-                    ["--{}={}".format(k,v) for k,v in args.items()])
+                    ["--{}={}".format(k,v) for k,v in kwargs.items()])
 
-def process_job(experiment, job_name, repeats, **args):
+def process_job(experiment, job_name, repeats, **kwargs):
     """ Process a job. """
     for _ in range(repeats):
         if count_jobs(experiment, job_name) < repeats:
-            run_job(experiment, job_name, args)
+            run_job(experiment, job_name, kwargs)
 
 def show_job_count(experiment, job_name, repeats):
     """ Count job. """
