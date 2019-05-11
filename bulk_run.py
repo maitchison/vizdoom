@@ -279,7 +279,7 @@ elif args.trial == "trial_18":
 
 elif args.trial == "exp_2":
     for update_every in [4, 2, 1, 1/2]:                                             # todo: include (1/4)
-        for learning_rate in [1e-4 * update_every * 2 ** x for x in [-2, -1, 0, 1]]:
+        for learning_rate in [1e-4 * 2 ** x for x in [-3, -2, -1, 0, 1, 2, 3]]:
             jobs.append(
                 ("update_every={} learning_rate={}".format(update_every, learning_rate), {
                 'target_update': 1000,
