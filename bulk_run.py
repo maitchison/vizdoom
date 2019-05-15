@@ -21,7 +21,7 @@ def count_jobs(experiment, job_name):
     # count the number folders that have our experiment name and arguments.
     counter = 0
     for r, d, f in os.walk(os.path.join("runs", experiment)):
-        if job_name+" [" in os.path.basename(r):
+        if job_name+" [" in os.path.basename(r) and "gcs" not in r:
             counter += 1
 
     return counter
@@ -276,7 +276,6 @@ elif args.trial == "trial_18":
                 'test_episodes_per_epoch': 10,  # faster to train, can always run more later...
             }))
 
-
 elif args.trial == "exp_2":
     for update_every in [4, 2, 1, 1/2]:                                             # todo: include (1/4)
         for learning_rate in [1e-4 * 2 ** x for x in [-3, -2, -1, 0, 1, 2, 3]]:
@@ -296,6 +295,106 @@ elif args.trial == "exp_2":
                 'test_episodes_per_epoch':100,   #faster to train, can always run more later...
             }))
 
+elif args.trial == "exp_2b":
+    args.trial = "exp_2"
+    for update_every in [1/4]:
+        for learning_rate in [1e-4 * 2 ** x for x in [-4, -3]]:
+            jobs.append(
+                ("update_every={} learning_rate={}".format(update_every, learning_rate), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 5000,
+                'update_every': update_every,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': learning_rate,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':50,
+                'max_pool': True,
+                'test_episodes_per_epoch':100,   #faster to train, can always run more later...
+            }))
+
+elif args.trial == "exp_2c":
+    args.trial = "exp_2"
+    for update_every in [2]:
+        for learning_rate in [1e-4 * 2 ** x for x in [-3, -2, -1, 0, 1, 2, 3]]:
+            jobs.append(
+                ("update_every={} learning_rate={}".format(update_every, learning_rate), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 5000,
+                'update_every': update_every,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': learning_rate,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':50,
+                'max_pool': True,
+                'test_episodes_per_epoch':100,   #faster to train, can always run more later...
+            }))
+
+elif args.trial == "exp_2e":
+    # repeats around best results
+    args.trial = "exp_2"
+    for update_every in [32, 16, 8, 4, 2, 1, 1/2, 1/4]:
+        for learning_rate in [5e-5 * update_every * 2 ** x for x in [-2, -1, 0, 1, 2]]:
+            jobs.append(
+                ("update_every={} learning_rate={}".format(update_every, learning_rate), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 5000,
+                'update_every': update_every,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': learning_rate,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':50,
+                'max_pool': True,
+                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+            }))
+
+elif args.trial == "exp_2f":
+    # extended search
+    args.trial = "exp_2"
+    for update_every in [32, 16, 8, 4, 2, 1, 1/2, 1/4]:
+        for learning_rate in [5e-5 * update_every * 2 ** x for x in [-3, -2, -1, 0, 1, 2, 3]]:
+            jobs.append(
+                ("update_every={} learning_rate={}".format(update_every, learning_rate), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 5000,
+                'update_every': update_every,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 4,
+                'learning_rate': learning_rate,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':50,
+                'max_pool': True,
+                'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+            }))
+
+
+elif args.trial == "agent_mode":
+    for agent_mode in ["default","random","stationary"]:                                             # todo: include (1/4)
+            jobs.append(
+                ("agent_mode={}".format(agent_mode), {
+                'target_update': 1000,
+                'learning_steps_per_epoch': 1000,
+                'update_every': 4,
+                'replay_memory_size': 10000,
+                'batch_size': 32,
+                'num_stacks': 1,
+                'learning_rate': 0.0001,
+                'health_as_reward': True,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':10,
+                'max_pool': False,
+                'test_episodes_per_epoch':100,
+            }))
 
 elif args.trial == "test_envs":
     for env in [

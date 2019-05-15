@@ -123,6 +123,7 @@ class Config:
         self.health_as_reward = False
         self.export_video = True
         self.job_name = "job"
+        self.agent_mode = "default"
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -413,12 +414,20 @@ def get_target_q_values(s,d):
     return q
 
 def get_best_action(s,d):
-    s = Variable(torch.from_numpy(s))
-    d = Variable(torch.from_numpy(d))
-    q = policy_model(s,d).detach()
-    m, index = torch.max(q, 1)
-    action = index.data.numpy()[0]
-    return action
+
+    if config.agent_mode == "random":
+        return randint(0, len(actions) - 1)
+    elif config.agent_mode == "stationary":
+        return 0
+    elif config.agent_mode == "default":
+        s = Variable(torch.from_numpy(s))
+        d = Variable(torch.from_numpy(d))
+        q = policy_model(s,d).detach()
+        m, index = torch.max(q, 1)
+        action = index.data.numpy()[0]
+        return action
+    else:
+        raise Exception("Invalid agent_mode {}".format(config.agent_mode))
 
 
 @track_time_taken
@@ -1202,6 +1211,7 @@ if __name__ == '__main__':
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
     parser.add_argument('--max_pool', type=str2bool, help="enable maxpooling.")
+    parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
 
     args = parser.parse_args()
 
