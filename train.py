@@ -110,7 +110,7 @@ class Config:
         self.target_update = 1000
         self.first_update_step = 1000
         self.frame_repeat = 10
-        self.resolution = (120, 45)
+        self.resolution = (84, 84)
         self.verbose = False
         self.max_pool = False
         self.config_file_path = "scenarios/health_gathering.cfg"
@@ -124,6 +124,7 @@ class Config:
         self.export_video = True
         self.job_name = "job"
         self.agent_mode = "default"
+        self.terminate_early = False
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -323,21 +324,26 @@ class Net(nn.Module):
 
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
+
         self.conv1 = nn.Conv2d(
             config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
-            kernel_size=7,
-            stride=1 if config.max_pool else 4
+            kernel_size=5,
+            stride=1 if config.max_pool else 2
         )
         self.conv2 = nn.Conv2d(
-            32, 32, kernel_size=5,
+            32, 32, kernel_size=3,
             stride=1 if config.max_pool else 2
         )
         self.conv3 = nn.Conv2d(
-            32, 32, kernel_size=3,
+            32, 64, kernel_size=3,
+            stride=1
+        )
+        self.conv4 = nn.Conv2d(
+            64, 64, kernel_size=3,
             stride=1
         )
         # maxpool and stride have slightly different final shapes.
-        final_shape = [32, 10, 1] if config.max_pool else [32, 11, 1]
+        final_shape = [64, 7, 1]
         self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
@@ -354,13 +360,16 @@ class Net(nn.Module):
         #frames = x.cpu().data.numpy().reshape(-1,config.resolution[0], config.resolution[1])
         #save_frames("frame-{0:03d}".format(frame_index), frames)
 
-        x = F.relu(self.conv1(x)) # Bx32x29x10
-        if config.max_pool:
-            x = F.max_pool2d(x, 4, padding=1)
-        x = F.relu(self.conv2(x)) # Bx32x13x3
+        x = F.relu(self.conv1(x))
         if config.max_pool:
             x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv3(x)) # Bx32x11x1
+        x = F.relu(self.conv2(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
+        x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, 2, padding=1)
+        x = F.relu(self.conv4(x))
         x = x.view(-1, prod(x.shape[1:])) # Bx352
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
@@ -839,6 +848,8 @@ def train_agent(continue_from_save = False):
 
     time_start = time()
 
+    current_gate = -1
+
     for epoch in range(start_epoch, config.epochs):
 
         # clear timing stats
@@ -958,6 +969,21 @@ def train_agent(continue_from_save = False):
 
         save_results(results,"_partial")
         save_model(epoch+1)
+
+        gate = (epoch * config.learning_steps_per_epoch) // (250 * 1000)
+        if args.terminate_early and gate > current_gate:
+            current_gate = gate
+            avg_score = np.mean(np.mean(results["test_scores_reward"], axis=1)[-5:])
+            required_score = [-1, 600, 800, 1000, -1][min(gate,4)]
+            if avg_score < required_score:
+                logging.critical(
+                    "Agent has not performed well enough to continue.  Reward at {}k is {:.1f} but needed to be {:.0f}".format(
+                        epoch * config.learning_steps_per_epoch / 1000, avg_score, required_score))
+                break
+            else:
+                logging.critical(
+                    "Agent passed gate at {}k with {:.1f} / {:.0f}".format(
+                        epoch * config.learning_steps_per_epoch / 1000, avg_score, required_score))
 
     save_results(results, "_complete")
     save_model()
@@ -1092,7 +1118,6 @@ def run_benchmark():
     config.target_update = 1000
     config.first_update_step = 0
     config.frame_repeat = 10
-    config.resolution = (120, 45)
     config.verbose=False
     config.config_file_path = "scenarios/basic.cfg"
     config.export_video = False
@@ -1130,7 +1155,6 @@ def run_simple_test(args):
     config.target_update = 100
     config.first_update_step = 100
     config.frame_repeat = 10
-    config.resolution = (120, 45)
     config.verbose=False
     config.config_file_path = "scenarios/basic.cfg"
 
@@ -1211,6 +1235,7 @@ if __name__ == '__main__':
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
     parser.add_argument('--max_pool', type=str2bool, help="enable maxpooling.")
+    parser.add_argument('--terminate_early', type=str2bool, help="agent stops training if progress has not been made.")
     parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
 
     args = parser.parse_args()
