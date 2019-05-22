@@ -9,15 +9,31 @@ this paper has some hyper paramaters too http://cs229.stanford.edu/proj2017/fina
 keras implementation of some maps. https://github.com/flyyufelix/VizDoom-Keras-RL
 """
 
-# force single threads, makes progream more CPU efficent but doesn't really hurt performance.
+# force single threads, makes program more CPU efficient but doesn't really hurt performance.
 # this does seem to affect pytorch cpu speed a bit though.
 import os
-import argparse
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ['OPENBLAS_NUM_THREADS'] = "1"
-os.environ['MKL_NUM_THREADS'] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
+import sys
 
+if __name__ == '__main__':
+
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ['OPENBLAS_NUM_THREADS'] = "1"
+    os.environ['MKL_NUM_THREADS'] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    for arg in sys.argv:
+        if "--threads" in arg.lower():
+            thread_count = arg.split("=")[-1]
+            print("Setting thread count to {}".format(thread_count))
+            #os.environ["OMP_NUM_THREADS"] = thread_count
+            #os.environ[''] = thread_count
+            #os.environ['MKL_NUM_THREADS'] = thread_count
+            #os.environ["OPENBLAS_NUM_THREADS"] = thread_count
+
+            os.environ["MKL_NUM_THREADS"] = thread_count
+
+
+import argparse
 import vizdoom as vzd
 import itertools as it
 from random import sample, randint, random
@@ -36,7 +52,6 @@ import matplotlib.pyplot as plt
 import os.path
 import cv2
 import uuid
-import sys
 
 import shutil
 import logging
@@ -676,8 +691,13 @@ def get_final_score(health_as_reward=None):
         health_as_reward = config.health_as_reward
     if health_as_reward:
         # use integral of health over time assuming agent would have lasted 2100 steps.
-        # todo: this needs to be done properly
-        final_score = sum(health_history) / (2100 / get_frame_repeat())
+
+        # note, we assume each health history entry has same length, which they should be on expectation.
+        current_tick = game.get_episode_time()
+        print("Finished on tick: {}".format(current_tick))
+
+        final_score = np.mean(health_history) * (current_tick / 2100)
+
     else:
         final_score = game.get_total_reward()
 
@@ -705,19 +725,25 @@ def reset_agent(episode=0):
         game.set_seed(config.rand_seed+episode)  # make sure we get a different start each time.
         game.new_episode()
     else:
-        # there is a bug? with vizdoom 1.1.7 where it will give the same starting location 50% of the time on
-        # windows only, which makes the results / training much higher on that platform.  This forces a unique starting
-        # location each time.
         game.set_seed(randint(1, 99999999))
         game.new_episode()
-        counter = 0
-        while get_player_location() in starting_locations and counter < 1000:
-            game.set_seed(randint(1, 99999999))
-            game.new_episode()
-            counter += 1
-        print(counter)
-        if get_player_location() in starting_locations:
-            logging.critical("Warning! Location duplicate found:",get_player_location())
+
+        # there is a bug? with vizdoom 1.1.7 where it will give the same starting location 50% of the time on
+        # windows only, which makes the results / training much higher on that platform.  This forces a unique starting
+        # location each time. Some maps, however, always start in the same place.
+
+        requires_duplicate_detection = "health_gathering" in config.config_file_path
+
+        if requires_duplicate_detection:
+
+            counter = 0
+            while get_player_location() in starting_locations and counter < 1000:
+                game.set_seed(randint(1, 99999999))
+                game.new_episode()
+                counter += 1
+            if get_player_location() in starting_locations:
+                logging.critical("Warning! Location duplicate found: {}".format(get_player_location()))
+
         starting_locations.add(get_player_location())
 
     # full observation buffer with first observation.
@@ -766,7 +792,7 @@ def get_frame_repeat(testing=False):
         return config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
 
 
-def eval_model():
+def eval_model(generate_video=False):
 
     policy_model.eval()
     test_scores = []
@@ -800,23 +826,17 @@ def eval_model():
                 img = np.swapaxes(img, 0, 2)
                 img = cv2.resize(np.float32(img) / 255, dsize=(480,640), interpolation=cv2.INTER_NEAREST)
                 img = np.swapaxes(img, 0, 2)
-                #img = np.swapaxes(img, 1, 2)
-                for i in range(4):
-                    img[:, step, i] = 1  # mark position in time.
                 img = np.uint8(img * 255)
-                frames.append(img)
+                if generate_video:
+                    frames.append(img)
 
         # make sure to record both the reward score, and the health as reward score.
         test_scores.append(get_final_score())
         test_scores_health.append(get_final_score(health_as_reward=True))
         test_scores_reward.append(get_final_score(health_as_reward=False))
 
-        save_video("./", "example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
-
-    for score in test_scores:
-        print(round(score,1))
-
-
+        if generate_video:
+            save_video("./", "example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
 
     return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
 
@@ -1426,6 +1446,7 @@ if __name__ == '__main__':
     parser.add_argument('--terminate_early', type=str2bool, help="agent stops training if progress has not been made.")
     parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
     parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
+    parser.add_argument('--threads', type=int, help="Number of threads to use during training")
 
     args = parser.parse_args()
 
