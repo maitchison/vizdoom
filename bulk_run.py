@@ -64,10 +64,12 @@ def count_jobs(experiment, job_name):
 
     return counter
 
+def get_python():
+    return "python3" if sys.platform in ["linux", "linux2"] else "python"
+
 def run_job(experiment, job_name, kwargs):
     """ Runs job with given arguments. """
-    python = "python3" if sys.platform in ["linux", "linux2"] else "python"
-    subprocess.call([python,args.train_script,"train"] +
+    subprocess.call([get_python(),args.train_script,"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
                     ["--{}={}".format(k,v) for k,v in kwargs.items()])
@@ -78,12 +80,19 @@ def process_job(experiment, job_name, repeats, **kwargs):
         if count_jobs(experiment, job_name) < repeats:
             run_job(experiment, job_name, kwargs)
 
+def process_eval(experiment, job_name, **kwargs):
+    """ Process a job. """
+    subprocess.call([get_python(), args.train_script, "eval"] +
+                    ["--experiment={}".format(experiment)] +
+                    ["--job_name={}".format(job_name)] +
+                    ["--{}={}".format(k, v) for k, v in kwargs.items()])
+
 def show_job_count(experiment, job_name, repeats):
     """ Count job. """
     print("{:<40} {}/{}".format(experiment+' '+job_name, count_jobs(experiment, job_name), repeats))
 
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
-parser.add_argument('mode', type=str, help='count | run | search')
+parser.add_argument('mode', type=str, help='count | run | search | eval')
 parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=1, help='Number of times to repeat each trial.')
 parser.add_argument('--train_script', type=str, default="train.py", help='Script to use to train.')
@@ -105,6 +114,55 @@ if args.trial == "exp_3":
             'learning_rate': 4e-4,
             'health_as_reward': True,
             'frame_repeat':frame_repeat,
+            'config_file_path': "scenarios/health_gathering_supreme.cfg",
+            'epochs':200,
+            'max_pool': False,
+            'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+        }))
+if args.trial == "exp_3_eval":
+    for frame_repeat in [1,2,3,4,6,8,10,15,20,30,40,60,80,100]:
+        jobs.append(
+            ("test_frame_repeat={}".format(frame_repeat), {
+            'test_frame_repeat':frame_repeat,
+            'test_episodes_per_epoch':100,
+        }))
+elif args.trial == "exp_4":
+    # look into epsilon decay
+    for end_eps in [0.2,0.1,0.05,0.025,0]:
+        jobs.append(
+            ("end_eps={}".format(end_eps), {
+            'end_eps': end_eps,
+            'target_update': 100,
+            'learning_steps_per_epoch': 5000,
+            'update_every': 4,
+            'replay_memory_size': 30000,
+            'batch_size': 32,
+            'num_stacks': 2,
+            'learning_rate': 3e-4,
+            'health_as_reward': True,
+            'frame_repeat': 10,
+            'config_file_path': "scenarios/health_gathering_supreme.cfg",
+            'epochs':200,
+            'max_pool': False,
+            'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+        }))
+elif args.trial == "exp_5":
+    # look into epsilon stage
+    # todo: use best final eps? or seach a little around it...
+    for end_eps_step in [x*1000 for x in [12.5, 25, 50, 100, 200, 400, 600, 800, 1000]]:
+        jobs.append(
+            ("end_eps_step={}".format(end_eps_step), {
+            'end_eps': 0.1,
+            'end_eps_step': end_eps_step,
+            'target_update': 100,
+            'learning_steps_per_epoch': 5000,
+            'update_every': 4,
+            'replay_memory_size': 30000,
+            'batch_size': 32,
+            'num_stacks': 2,
+            'learning_rate': 3e-4,
+            'health_as_reward': True,
+            'frame_repeat': 10,
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
             'epochs':200,
             'max_pool': False,
@@ -154,7 +212,13 @@ elif args.mode == "run":
                 repeats=runs,
                 **job_args
             )
-
+elif args.mode == "eval":
+    for job_name, job_args in jobs:
+        process_eval(
+            experiment=args.trial,
+            job_name=job_name,
+            **job_args
+        )
 elif args.mode == "search":
     for job_name, job_args in jobs:
         run_job(

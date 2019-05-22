@@ -12,6 +12,7 @@ keras implementation of some maps. https://github.com/flyyufelix/VizDoom-Keras-R
 # force single threads, makes progream more CPU efficent but doesn't really hurt performance.
 # this does seem to affect pytorch cpu speed a bit though.
 import os
+import argparse
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ['OPENBLAS_NUM_THREADS'] = "1"
 os.environ['MKL_NUM_THREADS'] = "1"
@@ -36,7 +37,7 @@ import os.path
 import cv2
 import uuid
 import sys
-import argparse
+
 import shutil
 import logging
 import platform
@@ -79,6 +80,8 @@ data_history = []    # observational history, plus health and time tick.
 game = None
 game_hq = None      # for video previews
 
+starting_locations = set()
+
 
 # --------------------------------------------------------
 
@@ -90,9 +93,18 @@ def get_job_key(args):
     params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
     return " ".join("{}={}".format(clean(k), clean(str(v))) for k, v in params)+" "
 
+
 class Config:
+    """
+    Contains configuration information
+
+    Attributes:
+        mode: The mode we are current in
+        ...
+    """
 
     def __init__(self):
+
         self.mode = "train"
         self.num_stacks = 1
         self.num_channels = 3   # 3 channels for color
@@ -104,15 +116,17 @@ class Config:
         self.replay_memory_size = 10000
         self.end_eps = 0.1
         self.start_eps = 1.0
-        self.hidden_units = 1024
+        self.hidden_units =  1024
         self.update_every = 1
         self.batch_size = 64
         self.target_update = 1000
         self.first_update_step = 1000
         self.frame_repeat = 10
+        self.test_frame_repeat = None           # if not none overrides frame_repeat for testing.
         self.resolution = (84, 84)
         self.verbose = False
         self.max_pool = False
+        self.end_eps_step = None
         self.config_file_path = "scenarios/health_gathering.cfg"
         self.job_id = uuid.uuid4().hex[:16]
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -125,6 +139,9 @@ class Config:
         self.job_name = "job"
         self.agent_mode = "default"
         self.terminate_early = False
+        self.pytorch_version = torch.__version__
+        self.python_vesion = sys.version
+        self.rand_seed = None
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -180,11 +197,15 @@ class Config:
 
     @property
     def start_eps_decay(self):
-        return min(self.total_steps * 0.1, self.learning_steps_per_epoch * 10, 10000)
+        return min(self.total_steps * 0.1, self.learning_steps_per_epoch * 10, 10*1000)
 
     @property
     def end_eps_decay(self):
-        return min(self.total_steps * 0.6, self.learning_steps_per_epoch * 60, 100000)
+        if self.end_eps_step is None:
+            # find a good default
+            return min(self.total_steps * 0.6, self.learning_steps_per_epoch * 60, 100*1000)
+        else:
+            return self.end_eps_step
 
     @property
     def total_steps(self):
@@ -374,6 +395,7 @@ class Net(nn.Module):
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
         x = self.fc2(x)
+
         return x.cpu()
 
 criterion = nn.MSELoss()
@@ -534,7 +556,7 @@ def perform_environment_step(step):
     global last_total_shaping_reward
 
     # give some time for this to catch up...
-    reward = env_step(actions[a], config.frame_repeat)
+    reward = env_step(actions[a], get_frame_repeat())
 
     if config.health_as_reward:
         current_health = game.get_game_variable(vzd.GameVariable.HEALTH)
@@ -591,6 +613,7 @@ def initialize_vizdoom():
     game.set_mode(vzd.Mode.PLAYER)
     game.set_screen_format(vzd.ScreenFormat.CRCGCB)
     game.set_screen_resolution(train_screen_resolution)
+    game.set_seed(123)
     game.init()
 
     if config.export_video:
@@ -653,14 +676,21 @@ def get_final_score(health_as_reward=None):
         health_as_reward = config.health_as_reward
     if health_as_reward:
         # use integral of health over time assuming agent would have lasted 2100 steps.
-        final_score = sum(health_history) / (2100 / config.frame_repeat)
+        # todo: this needs to be done properly
+        final_score = sum(health_history) / (2100 / get_frame_repeat())
     else:
         final_score = game.get_total_reward()
 
     return final_score
 
+def get_player_location():
+    return (
+        round(game.get_game_variable(vzd.GameVariable.POSITION_X),2),
+        round(game.get_game_variable(vzd.GameVariable.POSITION_Y),2),
+        round(game.get_game_variable(vzd.GameVariable.ANGLE),2)
+    )
 
-def reset_agent():
+def reset_agent(episode=0):
     """ Resets agent and stats to start of episode. """
 
     global previous_health
@@ -671,14 +701,30 @@ def reset_agent():
     last_total_shaping_reward = 0
     health_history = [100]
 
-    game.set_seed(randint(1, 99999999))  # make sure we get a different start each time.
-    game.new_episode()
+    if config.rand_seed is not None:
+        game.set_seed(config.rand_seed+episode)  # make sure we get a different start each time.
+        game.new_episode()
+    else:
+        # there is a bug? with vizdoom 1.1.7 where it will give the same starting location 50% of the time on
+        # windows only, which makes the results / training much higher on that platform.  This forces a unique starting
+        # location each time.
+        game.set_seed(randint(1, 99999999))
+        game.new_episode()
+        counter = 0
+        while get_player_location() in starting_locations and counter < 1000:
+            game.set_seed(randint(1, 99999999))
+            game.new_episode()
+            counter += 1
+        print(counter)
+        if get_player_location() in starting_locations:
+            logging.critical("Warning! Location duplicate found:",get_player_location())
+        starting_locations.add(get_player_location())
 
     # full observation buffer with first observation.
     for k in range(config.num_stacks):
         push_state(get_observation(), get_data())
 
-def save_video(folder, filename, frames):
+def save_video(folder, filename, frames, frame_rate=60):
     """ Saves given frames (list of np arrays) to video file. """
 
     logging.info("Exporting video example {}.".format(filename))
@@ -689,7 +735,7 @@ def save_video(folder, filename, frames):
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     #fourcc = cv2.VideoWriter_fourcc(*'H264')
-    out = cv2.VideoWriter(os.path.join(folder, filename), fourcc, 60, (width, height))
+    out = cv2.VideoWriter(os.path.join(folder, filename), fourcc, frame_rate, (width, height))
 
     for frame in frames:
         # we are in CHW but want to be in HWC
@@ -708,6 +754,18 @@ def get_stack():
         np.concatenate(data_history)[np.newaxis, :]
     )
 
+def get_frame_repeat(testing=False):
+    """
+    Gets frame repeat in either testing or training mode.
+    :param testing: True when testing, false when training.
+    :return: The sampled frame skip value.
+    """
+    if not testing:
+        return config.frame_repeat
+    else:
+        return config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
+
+
 def eval_model():
 
     policy_model.eval()
@@ -716,8 +774,11 @@ def eval_model():
     test_scores_reward = []
 
     for test_episode in trange(config.test_episodes_per_epoch, leave=False):
-        reset_agent()
+        reset_agent(test_episode)
         step = 0
+
+        frames = []
+
         while not game.is_episode_finished():
             handle_keypress()
             step += 1
@@ -728,15 +789,34 @@ def eval_model():
 
             best_action_index = get_best_action(s1, d1)
 
-            reward = env_step(actions[best_action_index], config.frame_repeat)
+            reward = env_step(actions[best_action_index], get_frame_repeat(testing=True))
+
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
             if SHOW_REWARDS and reward > 0:
                 logging.info("Reward! {} at step {}".format(reward, step))
+
+            if not game.is_episode_finished():
+                img = game.get_state().screen_buffer
+                img = np.swapaxes(img, 0, 2)
+                img = cv2.resize(np.float32(img) / 255, dsize=(480,640), interpolation=cv2.INTER_NEAREST)
+                img = np.swapaxes(img, 0, 2)
+                #img = np.swapaxes(img, 1, 2)
+                for i in range(4):
+                    img[:, step, i] = 1  # mark position in time.
+                img = np.uint8(img * 255)
+                frames.append(img)
 
         # make sure to record both the reward score, and the health as reward score.
         test_scores.append(get_final_score())
         test_scores_health.append(get_final_score(health_as_reward=True))
         test_scores_reward.append(get_final_score(health_as_reward=False))
+
+        save_video("./", "example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
+
+    for score in test_scores:
+        print(round(score,1))
+
+
 
     return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
 
@@ -752,10 +832,14 @@ def export_video(epoch):
     policy_model.eval()
     frames = []
 
-    reset_agent()
+    reset_agent(0)
     step = 0
+    best_action_index = 0
     while not game.is_episode_finished():
-        if step % config.frame_repeat == 0:
+
+        # todo: change this so we can sample from frame_repeat
+
+        if step % get_frame_repeat(testing=True) == 0:
             # only make decisions at the correct frame rate
             push_state(get_observation(), get_data())
 
@@ -867,12 +951,13 @@ def train_agent(continue_from_save = False):
             exploration_rate(epoch*config.learning_steps_per_epoch))
         )
         train_episodes_finished = 0
+        total_train_episodes_finished = 0
         train_scores = []
 
         logging.info("Training...")
         policy_model.train()
 
-        reset_agent()
+        reset_agent(epoch)
 
         for learning_step in trange(config.learning_steps_per_epoch, leave=False):
 
@@ -893,8 +978,9 @@ def train_agent(continue_from_save = False):
             if game.is_episode_finished():
                 score = get_final_score()
                 train_scores.append(score)
-                reset_agent()
+                reset_agent(total_train_episodes_finished)
                 train_episodes_finished += 1
+                total_train_episodes_finished += 1
 
         logging.info("\tTraining episodes played: {}".format(train_episodes_finished))
 
@@ -1032,8 +1118,18 @@ def restore_model(epoch=None):
     target_model = Net(len(actions))
     policy_model = Net(len(actions))
 
-    policy_model = torch.load(model_path)
-    target_model = torch.load(model_path)
+    policy_model = torch.load(model_path, map_location=config.device)
+    target_model = torch.load(model_path, map_location=config.device)
+
+    # upgrade older save files
+    for model in [policy_model, target_model]:
+        # if the model was saved in an earlyer version of pytorch it won't have these set
+        # so set them here
+        if "padding_mode" not in model.conv1.__dict__.keys():
+            model.conv1.padding_mode = 'constant'
+            model.conv2.padding_mode = 'constant'
+            model.conv3.padding_mode = 'constant'
+            model.conv4.padding_mode = 'constant'
 
     if config.device.lower() == "cuda":
         for model in [target_model, policy_model]:
@@ -1041,7 +1137,97 @@ def restore_model(epoch=None):
 
     target_model.eval()
 
-def run_evaluation():
+
+def smooth(X, epsilon=0.9):
+    if X == []:
+        return X
+    y = X[0]
+    result = []
+    for x in X:
+        y = y * epsilon + x * (1-epsilon)
+        result.append(y)
+    return result
+
+def get_best_epoch(results):
+    """ Load the model with the best performance, returns epoch loaded. """
+    smooth_scores = smooth(results["test_scores_mean"], 0.8)
+    best_epoch = np.argmax(smooth_scores)
+    return best_epoch
+
+
+def run_eval():
+    """ Evaluate the model the best model with given settings. """
+
+    global config
+
+    override_test_frame_repeat = config.test_frame_repeat
+    override_device = config.device
+    override_test_episodes_per_epoch = config.test_episodes_per_epoch
+    override_rand_seed = config.rand_seed
+
+    config_filename = os.path.join(config.job_folder, "results_partial.dat")
+    results = pickle.load(open(config_filename, "rb"))
+    config = results["config"]
+
+    # copy across the defined test_frame_repeat (if defined)
+    if override_test_frame_repeat is not None:
+        config.test_frame_repeat = override_test_frame_repeat
+
+    if config.test_episodes_per_epoch is not None:
+        config.test_episodes_per_epoch = override_test_episodes_per_epoch
+
+    config.rand_seed = override_rand_seed
+
+    # older files will not have this config file variable.
+    if "test_frame_repeat" not in config.__dict__.keys():
+        config.test_frame_repeat = None
+
+    # make sure we use the correct device.
+    config.device = override_device
+
+    config.mode = "eval"
+
+    # initialize vizdoom
+    initialize_vizdoom()
+
+    # load the best model
+    best_epoch = get_best_epoch(results)
+
+    #stub:
+    best_epoch = 95
+
+
+    logging.critical("=" * 100)
+    logging.critical("Evaluating Experiment {} {} [{}] - epoch {}".format(config.experiment, config.job_name, config.job_id, best_epoch))
+    logging.critical("=" * 100)
+
+    print("Using testing frame skip: {}".format(get_frame_repeat(testing=True)))
+
+    restore_model(best_epoch)
+
+    results = {}
+    results["test_scores"] = []
+    results["test_scores_health"] = []
+    results["test_scores_reward"] = []
+    results["test_scores_mean"] = []
+    results["config"] = config
+    results["args"] = config.args
+
+    test_scores, test_scores_health, test_scores_reward = eval_model()
+
+    results["test_scores_mean"].append(test_scores.mean())
+    results["test_scores"].append(test_scores)
+    results["test_scores_health"].append(test_scores_health)
+    results["test_scores_reward"].append(test_scores_reward)
+    results["best_epoch"] = best_epoch
+
+    logging.critical("Scores: {}".format([round(x, 2) for x in results["test_scores_mean"]]))
+
+    save_results(results, "_eval_{}".format(get_frame_repeat()))
+
+
+
+def run_full_eval():
     """ (re)runs model evaluations. """
 
     # get config settings from previous folder
@@ -1092,7 +1278,6 @@ def run_evaluation():
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
         save_results(results,"_partial")
-        save_model(epoch+1)
 
     save_results(results, "_complete")
 
@@ -1212,12 +1397,14 @@ if __name__ == '__main__':
 
     # handle parameters
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
-    parser.add_argument('mode', type=str, help='train | test | benchmark | info | eval')
+    parser.add_argument('mode', type=str, help='train | test | benchmark | info | eval | full_eval')
     parser.add_argument('--num_stacks', type=int, help='Agent is shown this number of frames of history.')
     parser.add_argument('--learning_rate', type=float, help='Learning rate.')
     parser.add_argument('--discount_factor', type=float, help='Discount factor.')
     parser.add_argument('--epochs', type=int, help='Number of epochs to train for.')
     parser.add_argument('--learning_steps_per_epoch', type=int, help='Number of environment steps per epoch.')
+    parser.add_argument('--end_eps', type=float, help='Final epsilon rate.')
+    parser.add_argument('--end_eps_step', type=float, help='Step after which epsilon will decay to end epsilon.')
     parser.add_argument('--replay_memory_size', type=int, help='Number of environment steps per epoch.')
     parser.add_argument('--hidden_units', type=int, help='Number of hidden units in model.')
     parser.add_argument('--batch_size', type=int, help='Samples per minibatch.')
@@ -1231,12 +1418,14 @@ if __name__ == '__main__':
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
     parser.add_argument('--health_as_reward', type=str2bool, help="use change in health as reward instead of default reward.")
     parser.add_argument('--frame_repeat', type=int, help="number of frames to skip.")
+    parser.add_argument('--test_frame_repeat', type=int, help="number of frames to skip during testing.")
     parser.add_argument('--include_aux_rewards', type=str2bool, help="use auxualry reward during training (these are not counted during evaluation).")
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
     parser.add_argument('--max_pool', type=str2bool, help="enable maxpooling.")
     parser.add_argument('--terminate_early', type=str2bool, help="agent stops training if progress has not been made.")
     parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
+    parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
 
     args = parser.parse_args()
 
@@ -1245,11 +1434,13 @@ if __name__ == '__main__':
     config.apply_args(args)
     config.make_job_folder()
 
+    log_name = "log.txt" if args.mode in ["training", "benchmark", "test"] else args.mode+".txt"
+
     # setup logging
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)-8s %(message)s',
                         datefmt='%a, %d %b %Y %H:%M:%S',
-                        filename=os.path.join(config.job_folder,'log.txt'),
+                        filename=os.path.join(config.job_folder,log_name),
                         filemode='w')
 
     enable_logging()
@@ -1257,14 +1448,18 @@ if __name__ == '__main__':
     logging.info("Using device: {}".format(config.device))
 
     # apply mode
+    if config.mode == "full_eval":
+        run_full_eval()
     if config.mode == "eval":
-        run_evaluation()
+        run_eval()
     elif config.mode == "train":
         train_agent()
     elif config.mode == "continue":
         train_agent(continue_from_save=True)
     elif config.mode == "info":
-        print("PyVorch:", torch.__version__)
+        print("Python:", sys.version)
+        print("PyTorch:", torch.__version__)
+        print("ViZDoom:", vzd.__version__)
         print("Device:", config.device)
         np.__config__.show()
     elif config.mode == "benchmark":
