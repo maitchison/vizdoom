@@ -102,7 +102,7 @@ args = parser.parse_args()
 jobs = []
 
 if args.trial == "frame_repeat":
-    for frame_repeat in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40]:
+    for frame_repeat in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, "g_10_0.5", "g_10_1", "g_10_2", "g_10_4 "]:
         jobs.append(
             ("frame_repeat={}".format(frame_repeat), {
             'frame_repeat':             frame_repeat,

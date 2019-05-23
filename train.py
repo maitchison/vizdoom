@@ -784,9 +784,43 @@ def get_frame_repeat(training=True):
     :return: The sampled frame skip value.
     """
     if training:
-        return config.frame_repeat
+        code = config.frame_repeat
     else:
-        return config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
+        code = config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
+
+    # we convert code to an integer if possible
+    try:
+        code = int(code)
+    except:
+        pass
+
+    if type(code) == int:
+        repeat = code
+    elif code[0] == 'g':
+        # gaussian
+        _, mu, sigma = code.split("_")
+        repeat = np.random.normal(float(mu), float(sigma))
+    elif code[0] == 'u':
+        # uniform
+        _, b, a = code.split("_")
+        repeat = np.random.uniform(float(a), float(b))
+    elif code[0] == 'p':
+        # poisson
+        _, lamb = code.split("_")
+        repeat = np.random.poisson(float(lamb))
+    else:
+        logging.critical("Invalid format string for frame_repeat {}".format(code))
+        exit()
+
+    # make sure we take get at least 1 step forward, otherwise progress won't happen.
+    repeat = round(repeat)
+    if repeat < 1:
+        repeat = 1
+
+    return repeat
+
+
+
 
 
 def eval_model(generate_video=False):
@@ -1439,7 +1473,7 @@ if __name__ == '__main__':
     parser.add_argument('--test_episodes_per_epoch', type=int, help='how many tests epsodes to run each epoch')
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
     parser.add_argument('--health_as_reward', type=str2bool, help="use change in health as reward instead of default reward.")
-    parser.add_argument('--frame_repeat', type=int, help="number of frames to skip.")
+    parser.add_argument('--frame_repeat', type=str, help="number of frames to skip.")
     parser.add_argument('--test_frame_repeat', type=int, help="number of frames to skip during testing.")
     parser.add_argument('--include_aux_rewards', type=str2bool, help="use auxualry reward during training (these are not counted during evaluation).")
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
