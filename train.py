@@ -25,13 +25,10 @@ if __name__ == '__main__':
         if "--threads" in arg.lower():
             thread_count = arg.split("=")[-1]
             print("Setting thread count to {}".format(thread_count))
-            #os.environ["OMP_NUM_THREADS"] = thread_count
-            #os.environ[''] = thread_count
-            #os.environ['MKL_NUM_THREADS'] = thread_count
-            #os.environ["OPENBLAS_NUM_THREADS"] = thread_count
-
-            os.environ["MKL_NUM_THREADS"] = thread_count
-
+            os.environ["OMP_NUM_THREADS"] = thread_count
+            os.environ[''] = thread_count
+            os.environ['MKL_NUM_THREADS'] = thread_count
+            os.environ["OPENBLAS_NUM_THREADS"] = thread_count
 
 import argparse
 import vizdoom as vzd
@@ -693,8 +690,7 @@ def get_final_score(health_as_reward=None):
         # use integral of health over time assuming agent would have lasted 2100 steps.
 
         # note, we assume each health history entry has same length, which they should be on expectation.
-        current_tick = game.get_episode_time()
-        print("Finished on tick: {}".format(current_tick))
+        final_health, current_tick, _ = data_history[-1]
 
         final_score = np.mean(health_history) * (current_tick / 2100)
 
@@ -780,13 +776,14 @@ def get_stack():
         np.concatenate(data_history)[np.newaxis, :]
     )
 
-def get_frame_repeat(testing=False):
+
+def get_frame_repeat(training=True):
     """
     Gets frame repeat in either testing or training mode.
-    :param testing: True when testing, false when training.
+    :param training: True when training, false when testing.
     :return: The sampled frame skip value.
     """
-    if not testing:
+    if training:
         return config.frame_repeat
     else:
         return config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
@@ -815,7 +812,7 @@ def eval_model(generate_video=False):
 
             best_action_index = get_best_action(s1, d1)
 
-            reward = env_step(actions[best_action_index], get_frame_repeat(testing=True))
+            reward = env_step(actions[best_action_index], get_frame_repeat(training=False))
 
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
             if SHOW_REWARDS and reward > 0:
@@ -855,22 +852,26 @@ def export_video(epoch):
     reset_agent(0)
     step = 0
     best_action_index = 0
+
+    frame_repeat_cooldown = 0
+
     while not game.is_episode_finished():
 
         # todo: change this so we can sample from frame_repeat
 
-        if step % get_frame_repeat(testing=True) == 0:
+        if frame_repeat_cooldown <= 0:
             # only make decisions at the correct frame rate
             push_state(get_observation(), get_data())
-
             s, d = get_stack()
-
             best_action_index = get_best_action(s, d)
+            frame_repeat_cooldown = get_frame_repeat(training=False)
+
         # we generate all frames for smooth video, even though
         # actions may stick for multiple frames.
         frames.append(game.get_state().screen_buffer)
         _ = game.make_action(actions[best_action_index], 1)
         step += 1
+        frame_repeat_cooldown -= 1
 
     # activate game again...
     game, game_hq = game_hq, game
@@ -1221,7 +1222,7 @@ def run_eval():
     logging.critical("Evaluating Experiment {} {} [{}] - epoch {}".format(config.experiment, config.job_name, config.job_id, best_epoch))
     logging.critical("=" * 100)
 
-    print("Using testing frame skip: {}".format(get_frame_repeat(testing=True)))
+    print("Using testing frame skip: {}".format(get_frame_repeat(training=False)))
 
     restore_model(best_epoch)
 
@@ -1360,8 +1361,9 @@ def run_simple_test(args):
     config.target_update = 100
     config.first_update_step = 100
     config.frame_repeat = 10
-    config.verbose=False
+    config.verbose = False
     config.config_file_path = "scenarios/basic.cfg"
+    config.health_as_reward = False
 
     # apply any custom arguments
     config.apply_args(args)

@@ -101,32 +101,31 @@ args = parser.parse_args()
 
 jobs = []
 
-if args.trial == "exp_3":
-    for frame_repeat in [1,2,3,4,6,8,10,15,20,30,40,60,80,100]:
+if args.trial == "frame_repeat":
+    for frame_repeat in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40]:
         jobs.append(
             ("frame_repeat={}".format(frame_repeat), {
-            'target_update': 1000,
+            'frame_repeat':             frame_repeat,
+            'target_update':            100,
             'learning_steps_per_epoch': 5000,
-            'update_every': 4,
-            'replay_memory_size': 10000,
-            'batch_size': 32,
-            'num_stacks': 4,
-            'learning_rate': 4e-4,
-            'health_as_reward': True,
-            'frame_repeat':frame_repeat,
+            'update_every':             4,
+            'replay_memory_size':       10000,
+            'batch_size':               32,
+            'num_stacks':               4,
+            'learning_rate':            4e-4,
+            'health_as_reward':         True,
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
-            'epochs':200,
-            'max_pool': False,
-            'test_episodes_per_epoch':25,   #faster to train, can always run more later...
+            'epochs':                   200,
+            'test_episodes_per_epoch':  25,
         }))
-if args.trial == "exp_3_eval":
-    for frame_repeat in [1,2,3,4,6,8,10,15,20,30,40,60,80,100]:
+elif args.trial == "frame_repeat_eval":
+    for frame_repeat in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40]:
         jobs.append(
             ("test_frame_repeat={}".format(frame_repeat), {
             'test_frame_repeat':frame_repeat,
             'test_episodes_per_epoch':100,
         }))
-elif args.trial == "exp_4":
+elif args.trial == "end_epsilon":
     # look into epsilon decay
     for end_eps in [0.2,0.1,0.05,0.025,0]:
         jobs.append(
@@ -146,13 +145,13 @@ elif args.trial == "exp_4":
             'max_pool': False,
             'test_episodes_per_epoch':25,   #faster to train, can always run more later...
         }))
-elif args.trial == "exp_5":
+elif args.trial == "end_epsilon_step":
     # look into epsilon stage
-    # todo: use best final eps? or seach a little around it...
+    # todo: use best final eps? or search a little around it...
     for end_eps_step in [x*1000 for x in [12.5, 25, 50, 100, 200, 400, 600, 800, 1000]]:
         jobs.append(
             ("end_eps_step={}".format(end_eps_step), {
-            'end_eps': 0.1,
+            'end_eps': 0.05,
             'end_eps_step': end_eps_step,
             'target_update': 100,
             'learning_steps_per_epoch': 5000,
@@ -176,18 +175,18 @@ elif args.trial == "search_1":
             'num_stacks': np.random.choice([1, 2, 4, 8]),
             'discount_factor': np.random.choice([1, 0.99, 0.98]),
             'replay_memory_size': np.random.choice([3000,10000,30000]),
-            'target_update': np.random.choice([-1, 100, 300, 1000, 3000, 10000]),
-            'hidden_units': np.random.choice([128, 256, 512, 1024, 2048]),
-            'learning_rate': np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4]),
-            'health_as_reward': np.random.choice([True, False]),
+            'target_update': np.random.choice([-1, 50, 100, 200, 400, 800]),
+            'hidden_units': np.random.choice([32, 64, 128, 256, 512, 1024, 2048]),
+            'learning_rate': np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
+            'health_as_reward': np.random.choice([True]),
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
-            'frame_repeat': 10,
+            'frame_repeat':     10,
             'learning_steps_per_epoch': 5000,
-            'test_episodes_per_epoch': 25,  # faster to train, can always run more later...
-            'update_every': 4,
-            'epochs':200,
-            'batch_size':32,
-            'terminate_early': True
+            'test_episodes_per_epoch': 25,
+            'update_every':     4,
+            'epochs':           200,
+            'batch_size':       32,
+            'terminate_early':  True
             }))
     if args.mode == "run":
         args.mode = "search"
