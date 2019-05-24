@@ -294,8 +294,8 @@ def preprocess(img):
 
 class ReplayMemory:
     def __init__(self, capacity):
-        state_shape = (capacity, config.num_channels * config.num_stacks, config.resolution[0], config.resolution[1])
-        data_shape = (capacity, aux_inputs * config.num_stacks)
+        state_shape = (capacity, config.num_channels, config.resolution[0], config.resolution[1])
+        data_shape = (capacity, aux_inputs)
         self.s1 = np.zeros(state_shape, dtype=np.uint8)
         self.s2 = np.zeros(state_shape, dtype=np.uint8) # save memory...
         self.d1 = np.zeros(data_shape, dtype=np.float32)
@@ -325,17 +325,34 @@ class ReplayMemory:
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
+    def _stack(self, data, samples):
+        result = []
+        for sample in samples:
+            # get the [F,C,H,W] sample and convert to [F*C,H,W]
+            frames = data[sample-config.num_stacks:sample]
+            if len(frames.shape) != 1:
+                frames = np.concatenate(frames, axis=0)
+            result.append(frames)
+        # convert to [B,F*C,H,W]
+        result = np.asarray(result)
+        return result
+
     @track_time_taken
     def get_sample(self, sample_size):
-        i = sample(range(0, self.size), sample_size)
+        """
+        Fetches a sample from the experience replay
+        :param sample_size:
+        :return: numpy array of shape ...
+        """
+        samples = np.random.choice(self.size - config.num_stacks, size=sample_size, replace=True) + config.num_stacks
         return (
-            self.s1[i],
-            self.d1[i],
-            self.a[i],
-            self.s2[i],
-            self.d2[i],
-            self.isterminal[i],
-            self.r[i]
+            self._stack(self.s1, samples),
+            self._stack(self.d1, samples),
+            self.a[samples],
+            self._stack(self.s2, samples),
+            self._stack(self.d2, samples),
+            self.isterminal[samples],
+            self.r[samples]
         )
 
 
@@ -523,7 +540,6 @@ def push_state(s,d):
         del observation_history[:-config.num_stacks]
         del data_history[:-config.num_stacks]
 
-
 def action_list_to_id(action_list):
     mul = 1
     result = 0
@@ -550,7 +566,7 @@ def perform_environment_step(step):
     """ Makes an action according to eps-greedy policy, observes the result
     (next state, reward) and learns from the transition"""
 
-    s1, d1 = get_stack()
+    s1, d1 = get_obs()
 
     # With probability eps make a random action.
     eps = exploration_rate(step)
@@ -558,7 +574,7 @@ def perform_environment_step(step):
     if random() <= eps:
         a = randint(0, len(actions) - 1)
     else:
-        a = get_best_action(s1, d1)
+        a = get_best_action(*get_stack())
 
     global last_total_shaping_reward
 
@@ -591,7 +607,7 @@ def perform_environment_step(step):
         s2, d2 = None, None
     else:
         push_state(get_observation(), get_data())
-        s2, d2 = get_stack()
+        s2, d2 = get_obs()
 
     memory.add_transition(s1, d1, a, s2, d2, isterminal, reward)
 
@@ -769,6 +785,13 @@ def get_stack():
     return (
         np.concatenate(observation_history)[np.newaxis, :, :, :],
         np.concatenate(data_history)[np.newaxis, :]
+    )
+
+def get_obs():
+    """ Returns a tuple containing last observation and data"""
+    return (
+        np.concatenate(observation_history[-1:])[np.newaxis, :, :, :],
+        np.concatenate(data_history[-1:])[np.newaxis, :]
     )
 
 
