@@ -55,14 +55,8 @@ import logging
 import platform
 import keyboard
 
-
-# --------------------------------------------------------
-# Debug settings
-# --------------------------------------------------------
-
-SHOW_REWARDS = False
-SHOW_MAXQ = False
-SHOW_FIRST_FRAME = False
+from operator import itemgetter
+from pympler import tracker
 
 # --------------------------------------------------------
 # Globals
@@ -93,13 +87,14 @@ game = None
 game_hq = None      # for video previews
 
 starting_locations = set()
-
+criterion = nn.MSELoss()
 
 # --------------------------------------------------------
 
 def clean(s):
     valid_chars = '-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     return "".join([x if x in valid_chars else "_" for x in s])
+
 
 def get_job_key(args):
     params = sorted([(k, v) for k, v in args.items() if k not in ["mode"] and v is not None])
@@ -119,7 +114,7 @@ class Config:
 
         self.mode = "train"
         self.num_stacks = 1
-        self.num_channels = 3   # 3 channels for color
+        self.use_color = True
         self.epochs = 40
         self.learning_rate = 0.00001
         self.discount_factor = 1
@@ -154,6 +149,7 @@ class Config:
         self.pytorch_version = torch.__version__
         self.python_vesion = sys.version
         self.rand_seed = None
+        self.eval_results_suffix = None
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -170,6 +166,10 @@ class Config:
 
         self.mode = self.mode.lower()
         self.args = args
+
+    @property
+    def num_channels(self):
+        return 3 if self.use_color else 1
 
     @property
     def job_folder(self):
@@ -239,6 +239,7 @@ class Config:
         else:
             print("Error moving completed job to {}.".format(config.final_job_folder))
 
+
 def track_time_taken(method):
 
     def timed(*args, **kwargs):
@@ -255,6 +256,7 @@ def track_time_taken(method):
 
     return timed
 
+
 def show_time_stats(log_level = logging.DEBUG):
     logging.log(log_level, "Timing stats:")
     logging.log(log_level, "\t{:<25} {:<8} {:<8}".format("Function","Calls","Time (ms) "))
@@ -264,31 +266,22 @@ def show_time_stats(log_level = logging.DEBUG):
         logging.log(log_level, "\t{:<25} {:<8} {:<8.3f}".format(k.lower(), count, per_time * 1000))
 
 
-
 # Converts and down-samples the input image
 @track_time_taken
 def preprocess(img):
-    # note: this is quite slow, might switch to another method of resizing?
-
-    original_img = img
 
     img = np.swapaxes(img, 0, 2)
     img = cv2.resize(np.float32(img)/255, dsize=config.resolution[::-1], interpolation=cv2.INTER_AREA)
     img = np.swapaxes(img, 0, 2)
     img = np.swapaxes(img, 1, 2)
 
+    # convert to grayscale if needed
+    if not config.use_color:
+        img = np.mean(img, axis=0, keepdims=True)
+
     # convert from float32 to uint8
     img = np.uint8(img * 255)
 
-    global SHOW_FIRST_FRAME
-    if SHOW_FIRST_FRAME:
-        original_img = np.swapaxes(original_img, 0, 2)
-        original_img = np.swapaxes(original_img, 0, 1)
-        plt.imshow(original_img)
-        plt.show()
-        plt.imshow(np.swapaxes(img,0,2))
-        plt.show()
-        SHOW_FIRST_FRAME = False
     return img
 
 
@@ -329,7 +322,7 @@ class ReplayMemory:
         result = []
         for sample in samples:
             # get the [F,C,H,W] sample and convert to [F*C,H,W]
-            frames = data[sample-config.num_stacks:sample]
+            frames = data[sample-config.num_stacks+1:sample+1]
             if len(frames.shape) != 1:
                 frames = np.concatenate(frames, axis=0)
             result.append(frames)
@@ -361,6 +354,7 @@ def prod(X):
     for x in X:
         y *= x
     return y
+
 
 def save_frames(filename, x):
     print("Saving {}".format(filename))
@@ -422,7 +416,6 @@ class Net(nn.Module):
 
         return x.cpu()
 
-criterion = nn.MSELoss()
 
 def learn(s1, d1, target_q):
     s1 = torch.from_numpy(s1)
@@ -452,6 +445,7 @@ def learn(s1, d1, target_q):
     optimizer.step()
     return loss
 
+
 def get_q_values(s,d):
     global max_q
     s = Variable(torch.from_numpy(s))
@@ -460,6 +454,7 @@ def get_q_values(s,d):
     max_q = max(max_q, float(torch.max(q)))
     return q
 
+
 def get_target_q_values(s,d):
     global max_q
     s = Variable(torch.from_numpy(s))
@@ -467,6 +462,7 @@ def get_target_q_values(s,d):
     q = target_model(s,d)
     max_q = max(max_q, float(torch.max(q)))
     return q
+
 
 def get_best_action(s,d):
 
@@ -540,6 +536,7 @@ def push_state(s,d):
         del observation_history[:-config.num_stacks]
         del data_history[:-config.num_stacks]
 
+
 def action_list_to_id(action_list):
     mul = 1
     result = 0
@@ -597,9 +594,6 @@ def perform_environment_step(step):
         logging.critical("Unusually large shaping reward found {}.".format(shaping_reward))
 
     reward += shaping_reward
-
-    if SHOW_REWARDS and shaping_reward != 0:
-        logging.debug("Shaping reward of {}".format(shaping_reward))
 
     isterminal = game.is_episode_finished()
 
@@ -659,12 +653,14 @@ def initialize_vizdoom():
 def update_target():
     target_model.load_state_dict(policy_model.state_dict())
 
+
 def tidy_args(args):
     result = {}
     for k,v in args.__dict__.items():
         if v is not None:
             result[k] = v
     return result
+
 
 def handle_keypress():
     if kb.kbhit():
@@ -689,6 +685,21 @@ def handle_keypress():
             logging.critical("**** Q to quit")
         elif c == "q":
             exit(-1)
+        elif c == "m":
+            mem = tracker.SummaryTracker()
+            results = sorted(mem.create_summary(), reverse=True, key=itemgetter(2))[:10]
+            for obj, count, size in results:
+                print("{:<50} {:>20} {:>20.1f}m".format(obj, count, size/1024/1024))
+        elif c == "c":
+            print("="*60)
+            print("Config")
+            print("=" * 60)
+            for k, v in config.__dict__.items():
+                if k == "args":
+                    print("{}:{}".format(k, tidy_args(v)))
+                else:
+                    print("{}:{}".format(k, v))
+            print("-" * 60)
         else:
             print()
             logging.critical("\nInvalid input {}.\n".format(c))
@@ -710,12 +721,14 @@ def get_final_score(health_as_reward=None):
 
     return final_score
 
+
 def get_player_location():
     return (
         round(game.get_game_variable(vzd.GameVariable.POSITION_X),2),
         round(game.get_game_variable(vzd.GameVariable.POSITION_Y),2),
         round(game.get_game_variable(vzd.GameVariable.ANGLE),2)
     )
+
 
 def reset_agent(episode=0):
     """ Resets agent and stats to start of episode. """
@@ -757,6 +770,7 @@ def reset_agent(episode=0):
     for k in range(config.num_stacks):
         push_state(get_observation(), get_data())
 
+
 def save_video(folder, filename, frames, frame_rate=60):
     """ Saves given frames (list of np arrays) to video file. """
 
@@ -786,6 +800,7 @@ def get_stack():
         np.concatenate(observation_history)[np.newaxis, :, :, :],
         np.concatenate(data_history)[np.newaxis, :]
     )
+
 
 def get_obs():
     """ Returns a tuple containing last observation and data"""
@@ -838,9 +853,6 @@ def get_frame_repeat(training=True):
     return repeat
 
 
-
-
-
 def eval_model(generate_video=False):
 
     policy_model.eval()
@@ -867,8 +879,6 @@ def eval_model(generate_video=False):
             reward = env_step(actions[best_action_index], get_frame_repeat(training=False))
 
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
-            if SHOW_REWARDS and reward > 0:
-                logging.info("Reward! {} at step {}".format(reward, step))
 
             if not game.is_episode_finished():
                 img = game.get_state().screen_buffer
@@ -1068,7 +1078,7 @@ def train_agent(continue_from_save = False):
 
         show_time_stats()
 
-        if config.export_video and (((epoch+1) % 10 == 0 or epoch == config.epochs-1) or epoch == 0):
+        if config.export_video and (((epoch+1) % 25 == 0 or epoch == config.epochs-1) or epoch == 0):
             logging.info("Exporting video...")
             export_video(epoch+1)
 
@@ -1161,6 +1171,7 @@ def train_agent(continue_from_save = False):
 
     return results
 
+
 def save_results(results, suffix=""):
     # save raw results to a pickle file for processing
     pickle.dump(results, open(os.path.join(config.job_folder, "results"+suffix+".dat"), "wb"))
@@ -1176,6 +1187,7 @@ def save_model(epoch=None):
         filename = "model_{0:03d}.dat".format(epoch)
         os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
         torch.save(policy_model, os.path.join(config.job_folder, "models", filename))
+
 
 def restore_model(epoch=None):
     """ restores model from checkpoint. """
@@ -1221,6 +1233,7 @@ def smooth(X, epsilon=0.9):
         result.append(y)
     return result
 
+
 def get_best_epoch(results):
     """ Load the model with the best performance, returns epoch loaded. """
     smooth_scores = smooth(results["test_scores_mean"], 0.8)
@@ -1237,6 +1250,7 @@ def run_eval():
     override_device = config.device
     override_test_episodes_per_epoch = config.test_episodes_per_epoch
     override_rand_seed = config.rand_seed
+    override_eval_results_suffix = config.eval_results_suffix
 
     config_filename = os.path.join(config.job_folder, "results_partial.dat")
     results = pickle.load(open(config_filename, "rb"))
@@ -1254,9 +1268,14 @@ def run_eval():
     # older files will not have this config file variable.
     if "test_frame_repeat" not in config.__dict__.keys():
         config.test_frame_repeat = None
+    if "use_color" not in config.__dict__.keys():
+        config.use_color = True
 
     # make sure we use the correct device.
     config.device = override_device
+
+    # put results suffix on.
+    config.eval_results_suffix = override_eval_results_suffix
 
     config.mode = "eval"
 
@@ -1266,15 +1285,11 @@ def run_eval():
     # load the best model
     best_epoch = get_best_epoch(results)
 
-    #stub:
-    best_epoch = 95
-
-
     logging.critical("=" * 100)
     logging.critical("Evaluating Experiment {} {} [{}] - epoch {}".format(config.experiment, config.job_name, config.job_id, best_epoch))
     logging.critical("=" * 100)
 
-    print("Using testing frame skip: {}".format(get_frame_repeat(training=False)))
+    print("Using testing frame skip: {}".format(config.test_frame_repeat))
 
     restore_model(best_epoch)
 
@@ -1296,8 +1311,7 @@ def run_eval():
 
     logging.critical("Scores: {}".format([round(x, 2) for x in results["test_scores_mean"]]))
 
-    save_results(results, "_eval_{}".format(get_frame_repeat()))
-
+    save_results(results, config.eval_results_suffix)
 
 
 def run_full_eval():
@@ -1355,13 +1369,11 @@ def run_full_eval():
     save_results(results, "_complete")
 
 
-
 def run_benchmark():
     """ Runs a standard benchmark to see how fast learning happens. """
 
     # set test settings
     config.num_stacks = 1
-    config.num_channels = 3  # 3 channels for color
     config.epochs = 1
     config.learning_rate = 0.001 # basic needs a much faster learning rate because of small rewards.
     config.discount_factor = 1
@@ -1393,12 +1405,12 @@ def run_benchmark():
 
     logging.log(logging.CRITICAL, "Took {:.1f} seconds at rate of {:.1f} steps / second.".format(total_time_taken, 1 / step_time))
 
+
 def run_simple_test(args):
     """ Runs a simple test to make sure model is able to learn the basic environment. """
 
     # set test settings
     config.num_stacks = 1
-    config.num_channels = 3  # 3 channels for color
     config.epochs = 10
     config.learning_rate = 0.001 # basic needs a much faster learning rate because of small rewards.
     config.discount_factor = 1
@@ -1434,6 +1446,7 @@ def run_simple_test(args):
         print("Test failed!")
         exit(-1)
 
+
 def generate_graphs(data):
     """ Generates graph from results file. """
 
@@ -1451,11 +1464,13 @@ def generate_graphs(data):
 
     plt.savefig(os.path.join(config.job_folder, "training.png"))
 
+
 def enable_logging():
     global console_logger
     console_logger = logging.StreamHandler()
     console_logger.setLevel(logging.INFO if config.verbose else logging.ERROR)
     logging.getLogger().addHandler(console_logger)
+
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -1465,6 +1480,7 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+
 if __name__ == '__main__':
 
     config = Config()
@@ -1473,6 +1489,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
     parser.add_argument('mode', type=str, help='train | test | benchmark | info | eval | full_eval')
     parser.add_argument('--num_stacks', type=int, help='Agent is shown this number of frames of history.')
+    parser.add_argument('--use_color', type=str2bool, help='Enables color model.')
     parser.add_argument('--learning_rate', type=float, help='Learning rate.')
     parser.add_argument('--discount_factor', type=float, help='Discount factor.')
     parser.add_argument('--epochs', type=int, help='Number of epochs to train for.')
@@ -1492,7 +1509,7 @@ if __name__ == '__main__':
     parser.add_argument('--config_file_path', type=str, help="config file to use for VizDoom.")
     parser.add_argument('--health_as_reward', type=str2bool, help="use change in health as reward instead of default reward.")
     parser.add_argument('--frame_repeat', type=str, help="number of frames to skip.")
-    parser.add_argument('--test_frame_repeat', type=int, help="number of frames to skip during testing.")
+    parser.add_argument('--test_frame_repeat', type=str, help="number of frames to skip during testing.")
     parser.add_argument('--include_aux_rewards', type=str2bool, help="use auxualry reward during training (these are not counted during evaluation).")
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
@@ -1501,6 +1518,7 @@ if __name__ == '__main__':
     parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
     parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
     parser.add_argument('--threads', type=int, help="Number of threads to use during training")
+    parser.add_argument('--eval_results_suffix', type=str, default="", help="Filename suffix for evaluation results.")
 
     args = parser.parse_args()
 
