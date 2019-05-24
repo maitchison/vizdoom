@@ -17,8 +17,8 @@ import sys
 if __name__ == '__main__':
 
     os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ['OPENBLAS_NUM_THREADS'] = "1"
-    os.environ['MKL_NUM_THREADS'] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
     for arg in sys.argv:
@@ -26,8 +26,8 @@ if __name__ == '__main__':
             thread_count = arg.split("=")[-1]
             print("Setting thread count to {}".format(thread_count))
             os.environ["OMP_NUM_THREADS"] = thread_count
-            os.environ[''] = thread_count
-            os.environ['MKL_NUM_THREADS'] = thread_count
+            os.environ["OPENBLAS_NUM_THREADS"] = thread_count
+            os.environ["MKL_NUM_THREADS"] = thread_count
             os.environ["OPENBLAS_NUM_THREADS"] = thread_count
 
 import argparse
@@ -387,11 +387,6 @@ class Net(nn.Module):
         d = d.to(config.device)   # Bx4x3
 
         x = x.float()/255         # convert from unit8 to float32 format
-
-        # for debuging, save frames
-        #frame_index = int(d.cpu().data.numpy()[0][1])
-        #frames = x.cpu().data.numpy().reshape(-1,config.resolution[0], config.resolution[1])
-        #save_frames("frame-{0:03d}".format(frame_index), frames)
 
         x = F.relu(self.conv1(x))
         if config.max_pool:

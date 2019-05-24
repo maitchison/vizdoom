@@ -67,9 +67,21 @@ def count_jobs(experiment, job_name):
 def get_python():
     return "python3" if sys.platform in ["linux", "linux2"] else "python"
 
+def get_train_script():
+    if args.train_script is not None:
+        return args.train_script
+    else:
+        # use the trial train.py if it exists, otherwise use default
+        trial_train = os.path.join("runs",args.trial,"train.py")
+        if os.path.exists(trial_train):
+            return trial_train
+        else:
+            return "train.py"
+
 def run_job(experiment, job_name, kwargs):
     """ Runs job with given arguments. """
-    subprocess.call([get_python(),args.train_script,"train"] +
+    print("Using training script {}".format(get_train_script()))
+    subprocess.call([get_python(),get_train_script(),"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
                     ["--{}={}".format(k,v) for k,v in kwargs.items()])
@@ -82,7 +94,7 @@ def process_job(experiment, job_name, repeats, **kwargs):
 
 def process_eval(experiment, job_name, **kwargs):
     """ Process a job. """
-    subprocess.call([get_python(), args.train_script, "eval"] +
+    subprocess.call([get_python(), get_train_script(), "eval"] +
                     ["--experiment={}".format(experiment)] +
                     ["--job_name={}".format(job_name)] +
                     ["--{}={}".format(k, v) for k, v in kwargs.items()])
@@ -95,7 +107,7 @@ parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run | search | eval')
 parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=1, help='Number of times to repeat each trial.')
-parser.add_argument('--train_script', type=str, default="train.py", help='Script to use to train.')
+parser.add_argument('--train_script', type=str, default=None, help='Script to use to train.')
 
 args = parser.parse_args()
 
