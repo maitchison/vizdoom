@@ -944,7 +944,7 @@ def export_video(epoch):
         logging.critical("Error saving video: {}".format(e))
 
 
-def train_agent(continue_from_save = False):
+def train_agent(continue_from_save=False):
     """ Run a test with given parameters, returns stats in dictionary. """
 
 

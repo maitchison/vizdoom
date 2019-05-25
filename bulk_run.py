@@ -148,8 +148,15 @@ args = parser.parse_args()
 
 jobs = []
 
+frame_repeat_list = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 35*2, 35*3, 35*4,
+    "g_7_0", "g_7_0.5", "g_7_1", "g_7_2", "g_7_4", "g_7_8",
+    "g_10_0", "g_10_0.5", "g_10_1", "g_10_2", "g_10_4 ", "g_10_8",
+    "p_5", "p_7", "p_10", "p_20", "p_40"
+]
+
 if args.trial == "frame_repeat":
-    for frame_repeat in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 35*2, 35*3, 35*4, "g_10_0.5", "g_10_1", "g_10_2", "g_10_4 "]:
+    for frame_repeat in frame_repeat_list:
         jobs.append(
             ("frame_repeat={}".format(frame_repeat), {
             'frame_repeat':             frame_repeat,
@@ -166,7 +173,7 @@ if args.trial == "frame_repeat":
             'test_episodes_per_epoch':  25,
         }))
 elif args.trial == "frame_repeat_eval":
-    for frame_repeat in reversed([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 35*2, 35*3, 35*4, "g_10_0.5", "g_10_1", "g_10_2", "g_10_4"]):
+    for frame_repeat in reversed(frame_repeat_list):
         jobs.append(
             ("_frame_repeat={}".format(frame_repeat), {
             'test_frame_repeat':        frame_repeat,
@@ -249,7 +256,7 @@ elif args.trial == "search_1":
             'max_pool':                 np.random.choice([True, False]),
             'use_color':                np.random.choice([True, False]),
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
-            'frame_repeat':             10,
+            'frame_repeat':             np.random.choice([7, 10]),
             'learning_steps_per_epoch': 5000,
             'test_episodes_per_epoch':  25,
             'update_every':             4,
