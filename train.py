@@ -150,6 +150,7 @@ class Config:
         self.python_vesion = sys.version
         self.rand_seed = None
         self.eval_results_suffix = None
+        self.model = None
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -364,10 +365,25 @@ def save_frames(filename, x):
         plt.imsave("{}-{:03d}.png".format(filename,i+1), x[i])
 
 
-class Net(nn.Module):
+def Net(available_actions_count):
+    """ Construct network according to config setting. """
+    if config.model == "basic":
+        return BasicNet(available_actions_count)
+    elif config.model == "tall":
+        return TallNet(available_actions_count)
+    elif config.model == "fat":
+        return FatNet(available_actions_count)
+    elif config.model == "deep":
+        return DeepNet(available_actions_count)
+    else:
+        raise Exception("Invalid model name {}.".format(config.model))
 
+class BasicNet(nn.Module):
+    """
+    This is a basic 4 layer conv network used in many tests.
+    """
     def __init__(self, available_actions_count):
-        super(Net, self).__init__()
+        super(BasicNet, self).__init__()
 
         self.conv1 = nn.Conv2d(
             config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
@@ -409,6 +425,178 @@ class Net(nn.Module):
         x = F.relu(self.conv3(x))
         x = F.max_pool2d(x, 2, padding=1)
         x = F.relu(self.conv4(x))
+        x = x.view(-1, prod(x.shape[1:])) # Bx352
+        x = torch.cat((x, d), 1)  # Bx355
+        x = F.leaky_relu(self.fc1(x))
+        x = self.fc2(x)
+
+        return x.cpu()
+
+
+class TallNet(nn.Module):
+    """
+    Extends the y resolution of the basic network so that poison bottles are more easily seen.
+    """
+    def __init__(self, available_actions_count):
+        super(TallNet, self).__init__()
+
+        self.conv1 = nn.Conv2d(
+            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
+            kernel_size=5,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv2 = nn.Conv2d(
+            32, 32, kernel_size=3,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv3 = nn.Conv2d(
+            32, 64, kernel_size=3,
+            stride=1
+        )
+        self.conv4 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+        # maxpool and stride have slightly different final shapes.
+        final_shape = [64, 7, 7]
+        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
+        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
+
+    @track_time_taken
+    def forward(self, x, d):
+
+        x = x.to(config.device)   # BxCx120x45
+        d = d.to(config.device)   # Bx4x3
+
+        x = x.float()/255         # convert from unit8 to float32 format
+
+        x = F.relu(self.conv1(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv2(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        #x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
+        x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, 2, padding=1)
+        x = F.relu(self.conv4(x))
+
+        x = x.view(-1, prod(x.shape[1:])) # Bx352
+        x = torch.cat((x, d), 1)  # Bx355
+        x = F.leaky_relu(self.fc1(x))
+        x = self.fc2(x)
+
+        return x.cpu()
+
+
+class FatNet(nn.Module):
+    """
+    Extends the y resolution of the basic network and increase the number of filters signficantly.
+    """
+    def __init__(self, available_actions_count):
+        super(FatNet, self).__init__()
+
+        self.conv1 = nn.Conv2d(
+            config.num_channels * config.num_stacks, 64,    #3 color channels, 4 previous frames.
+            kernel_size=5,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv2 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv3 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+        self.conv4 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+        # maxpool and stride have slightly different final shapes.
+        final_shape = [64, 7, 7]
+        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
+        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
+
+    @track_time_taken
+    def forward(self, x, d):
+
+        x = x.to(config.device)   # BxCx120x45
+        d = d.to(config.device)   # Bx4x3
+
+        x = x.float()/255         # convert from unit8 to float32 format
+
+        x = F.relu(self.conv1(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv2(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, 2, padding=1)
+        x = F.relu(self.conv4(x))
+
+        x = x.view(-1, prod(x.shape[1:])) # Bx352
+        x = torch.cat((x, d), 1)  # Bx355
+        x = F.leaky_relu(self.fc1(x))
+        x = self.fc2(x)
+
+        return x.cpu()
+
+
+class DeepNet(nn.Module):
+    """
+    Extends the y resolution of the basic network, increase the number of filters signficantly, and is deeper.
+    """
+    def __init__(self, available_actions_count):
+        super(DeepNet, self).__init__()
+
+        self.conv1 = nn.Conv2d(
+            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
+            kernel_size=3,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv2 = nn.Conv2d(
+            32, 64, kernel_size=3,
+            stride=1 if config.max_pool else 2
+        )
+        self.conv3 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+        self.conv4 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+
+        self.conv5 = nn.Conv2d(
+            64, 64, kernel_size=3,
+            stride=1
+        )
+
+        # maxpool and stride have slightly different final shapes.
+        final_shape = [64, 5, 5]
+        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
+        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
+
+    @track_time_taken
+    def forward(self, x, d):
+
+        x = x.to(config.device)   # BxCx120x45
+        d = d.to(config.device)   # Bx4x3
+
+        x = x.float()/255         # convert from unit8 to float32 format
+
+        x = F.relu(self.conv1(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv2(x))
+        if config.max_pool:
+            x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv3(x))
+        x = F.max_pool2d(x, 2, padding=0)
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
         x = x.view(-1, prod(x.shape[1:])) # Bx352
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
@@ -826,6 +1014,8 @@ def get_frame_repeat(training=True):
         code = int(code)
     except:
         pass
+
+    repeat = 0
 
     if type(code) == int:
         repeat = code
@@ -1519,6 +1709,7 @@ if __name__ == '__main__':
     parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
     parser.add_argument('--threads', type=int, help="Number of threads to use during training")
     parser.add_argument('--eval_results_suffix', type=str, default="", help="Filename suffix for evaluation results.")
+    parser.add_argument('--model', type=str, default="basic", help="Name of model to use basic | tall | fat | deep")
 
     args = parser.parse_args()
 
