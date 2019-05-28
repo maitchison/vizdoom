@@ -151,6 +151,9 @@ class Config:
         self.rand_seed = None
         self.eval_results_suffix = None
         self.model = None
+        self.optimizer = "rmsprop"
+        self.weight_decay = 0.0
+        self.include_xy = False
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -287,16 +290,20 @@ def preprocess(img):
 
 
 class ReplayMemory:
+
     def __init__(self, capacity):
         state_shape = (capacity, config.num_channels, config.resolution[0], config.resolution[1])
         data_shape = (capacity, aux_inputs)
         self.s1 = np.zeros(state_shape, dtype=np.uint8)
-        self.s2 = np.zeros(state_shape, dtype=np.uint8) # save memory...
+        self.s2 = np.zeros(state_shape, dtype=np.uint8)
         self.d1 = np.zeros(data_shape, dtype=np.float32)
         self.d2 = np.zeros(data_shape, dtype=np.float32)
         self.a = np.zeros(capacity, dtype=np.int32)
         self.r = np.zeros(capacity, dtype=np.float32)
         self.isterminal = np.zeros(capacity, dtype=np.float32)
+
+        logging.info("State buffer size: {} = {:.1f}m".format(state_shape, np.prod(state_shape)*1/1024/1024))
+        logging.info("Data buffer size: {} = {:.1f}m".format(data_shape, np.prod(data_shape)*4/1024/1024))
 
         self.capacity = capacity
         self.size = 0
@@ -360,15 +367,14 @@ def prod(X):
 def save_frames(filename, x):
     print("Saving {}".format(filename))
     print("Shape:",x.shape)
-    print("min/max/mean/median",print(np.min(x), np.max(x), np.mean(x), np.median(x)))
     for i in range(len(x)):
         plt.imsave("{}-{:03d}.png".format(filename,i+1), x[i])
 
 
-def Net(available_actions_count):
+def get_net(available_actions_count):
     """ Construct network according to config setting. """
     if config.model == "basic":
-        return BasicNet(available_actions_count)
+        return Net(available_actions_count)
     elif config.model == "tall":
         return TallNet(available_actions_count)
     elif config.model == "fat":
@@ -378,12 +384,12 @@ def Net(available_actions_count):
     else:
         raise Exception("Invalid model name {}.".format(config.model))
 
-class BasicNet(nn.Module):
+class Net(nn.Module):
     """
     This is a basic 4 layer conv network used in many tests.
     """
     def __init__(self, available_actions_count):
-        super(BasicNet, self).__init__()
+        super(Net, self).__init__()
 
         self.conv1 = nn.Conv2d(
             config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
@@ -1134,6 +1140,17 @@ def export_video(epoch):
         logging.critical("Error saving video: {}".format(e))
 
 
+def get_optimizer():
+    if config.optimizer == "rmsprop":
+        return torch.optim.RMSprop(policy_model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    elif config.optimizer == "rmsprop_centered":
+        return torch.optim.RMSprop(policy_model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay,
+                            centered=True)
+    elif config.optimizer == "adam":
+        return torch.optim.Adam(policy_model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    else:
+        raise Exception("Invalid optimizer name {}".format(config.optimizer))
+
 def train_agent(continue_from_save=False):
     """ Run a test with given parameters, returns stats in dictionary. """
 
@@ -1188,8 +1205,8 @@ def train_agent(continue_from_save=False):
         # also set start_epoch
         pass
     else:
-        target_model = Net(len(actions))
-        policy_model = Net(len(actions))
+        target_model = get_net(len(actions))
+        policy_model = get_net(len(actions))
 
     if config.device.lower() == "cuda":
         for model in [target_model, policy_model]:
@@ -1201,7 +1218,8 @@ def train_agent(continue_from_save=False):
     logging.debug("Actions: {}".format(actions))
 
     global optimizer
-    optimizer = torch.optim.RMSprop(policy_model.parameters(), lr=config.learning_rate)
+
+    optimizer = get_optimizer()
 
     time_start = time()
 
@@ -1334,6 +1352,9 @@ def train_agent(continue_from_save=False):
             current_gate = gate
             avg_score = np.mean(np.mean(results["test_scores_reward"], axis=1)[-5:])
             required_score = [-1, 600, 800, 1000, -1][min(gate,4)]
+            if "take_cover" in config.scenario:
+                #this one is a bit harder.
+                required_score /= 2
             if avg_score < required_score:
                 logging.critical(
                     "Agent has not performed well enough to continue.  Reward at {}k is {:.1f} but needed to be {:.0f}".format(
@@ -1390,8 +1411,8 @@ def restore_model(epoch=None):
     global policy_model
     global target_model
 
-    target_model = Net(len(actions))
-    policy_model = Net(len(actions))
+    target_model = get_net(len(actions))
+    policy_model = get_net(len(actions))
 
     policy_model = torch.load(model_path, map_location=config.device)
     target_model = torch.load(model_path, map_location=config.device)
@@ -1460,6 +1481,8 @@ def run_eval():
         config.test_frame_repeat = None
     if "use_color" not in config.__dict__.keys():
         config.use_color = True
+    if "model" not in config.__dict__.keys():
+        config.model = "basic"
 
     # make sure we use the correct device.
     config.device = override_device
@@ -1710,6 +1733,9 @@ if __name__ == '__main__':
     parser.add_argument('--threads', type=int, help="Number of threads to use during training")
     parser.add_argument('--eval_results_suffix', type=str, default="", help="Filename suffix for evaluation results.")
     parser.add_argument('--model', type=str, default="basic", help="Name of model to use basic | tall | fat | deep")
+    parser.add_argument('--weight_decay', type=float, default=0.0, help="weight decay for optimizer")
+    parser.add_argument('--optimizer', type=str, default = "rmsprop", help="adam | rmsprop | rmsprop_centered")
+    parser.add_argument('--include_xy', type=str2bool, default = False, help="if true includes xy location as a channel.")
 
     args = parser.parse_args()
 
