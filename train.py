@@ -173,7 +173,9 @@ class Config:
 
     @property
     def num_channels(self):
-        return 3 if self.use_color else 1
+        color_channels = 3 if self.use_color else 1
+        xy_channels = 2 if self.include_xy else 0
+        return color_channels + xy_channels
 
     @property
     def job_folder(self):
@@ -282,6 +284,15 @@ def preprocess(img):
     # convert to grayscale if needed
     if not config.use_color:
         img = np.mean(img, axis=0, keepdims=True)
+
+    # add xy if needed
+    if config.include_xy:
+        c, h, w = img.shape
+        xy = np.zeros((2,h,w))
+        for y in range(h):
+            for x in range(w):
+                xy[:,x,y] = (x/w,y/h)
+        img = np.concatenate((img, xy), axis=0)
 
     # convert from float32 to uint8
     img = np.uint8(img * 255)
