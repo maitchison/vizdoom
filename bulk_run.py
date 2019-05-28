@@ -60,7 +60,7 @@ def count_jobs(experiment, job_name):
 
     # count the number folders that have our experiment name and arguments.
     counter = 0
-    for r, d, f in os.walk(os.path.join("runs", experiment)):
+    for r, d, f in os.walk(os.path.join(args.output_path, experiment)):
         if job_name+" [" in os.path.basename(r) and "gcs" not in r:
             counter += 1
 
@@ -76,7 +76,7 @@ def get_train_script():
         return args.train_script
     else:
         # use the trial train.py if it exists, otherwise use default
-        trial_train = os.path.join("runs",args.trial,"train.py")
+        trial_train = os.path.join(args.output_path, args.trial,"train.py")
         if os.path.exists(trial_train):
             return trial_train
         else:
@@ -89,6 +89,7 @@ def run_job(experiment, job_name, kwargs):
     subprocess.call([get_python(),get_train_script(),"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
+                    ["--output_path='{}'".format(args.output_path)] +
                     ["--{}={}".format(k,v) for k,v in kwargs.items()])
 
 
@@ -104,7 +105,7 @@ def process_eval(experiment, eval_results_suffix, **kwargs):
 
     jobs_to_evaluate = []
 
-    for r, d, f in os.walk(os.path.join("runs", experiment)):
+    for r, d, f in os.walk(os.path.join(args.output_path, experiment)):
         folder = os.path.basename(r)
         if len(folder.split()) < 2:
             continue
@@ -129,6 +130,7 @@ def process_eval(experiment, eval_results_suffix, **kwargs):
                         ["--job_name={}".format(job_name)] +
                         ["--job_id={}".format(job_id)] +
                         ["--eval_results_suffix={}".format(eval_results_suffix)] +
+                        ["--output_path='{}'".format(args.output_path)] +
                         ["--{}={}".format(k, v) for k, v in kwargs.items()])
 
 
@@ -143,6 +145,8 @@ parser.add_argument('mode', type=str, help='count | run | search | eval')
 parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=1, help='Number of times to repeat each trial.')
 parser.add_argument('--train_script', type=str, default=None, help='Script to use to train.')
+parser.add_argument('--threads', type=int, help='CPU threads for workers.')
+parser.add_argument('--output_path', type=str, default="runs", help='Path to output experiment results to.')
 
 args = parser.parse_args()
 
@@ -240,6 +244,26 @@ elif args.trial == "use_color":
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
             'epochs':                   200,
             'max_pool':                 True,
+            'test_episodes_per_epoch':  25,
+        }))
+elif args.trial == "include_xy":
+    for include_xy in [True, False]:
+        jobs.append(
+            ("include_xy={}".format(include_xy), {
+            'include_xy':               include_xy,
+            'end_eps':                  0.10,
+            'target_update':            200,
+            'learning_steps_per_epoch': 5000,
+            'update_every':             4,
+            'replay_memory_size':       10000,
+            'batch_size':               32,
+            'num_stacks':               4,
+            'learning_rate':            3e-4,
+            'health_as_reward':         True,
+            'frame_repeat':             10,
+            'config_file_path': "scenarios/health_gathering_supreme.cfg",
+            'epochs':                   200,
+            'max_pool':                 False,
             'test_episodes_per_epoch':  25,
         }))
 elif args.trial == "weight_decay":
@@ -355,6 +379,11 @@ elif args.trial == "take_cover":
 else:
     print("Invalid trial name '{}'".format(args.trial))
     exit(-1)
+
+# set thread limit for worker
+if args.threads is not None:
+    for job in jobs:
+        job[1]["threads"] = args.threads
 
 
 if args.mode == "count":

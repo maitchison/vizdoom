@@ -154,6 +154,7 @@ class Config:
         self.optimizer = "rmsprop"
         self.weight_decay = 0.0
         self.include_xy = False
+        self.output_path = "runs"
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -190,7 +191,7 @@ class Config:
 
         prefix = "_" if config.mode == "train" else ""
 
-        return os.path.join("runs", experiment, prefix + self.job_subfolder)
+        return os.path.join(self.output_path, experiment, prefix + self.job_subfolder)
 
     @property
     def final_job_folder(self):
@@ -202,7 +203,7 @@ class Config:
         else:
             experiment = self.experiment
 
-        return os.path.join("runs", experiment, self.job_subfolder)
+        return os.path.join(self.output_path, experiment, self.job_subfolder)
 
     @property
     def job_subfolder(self):
@@ -271,6 +272,23 @@ def show_time_stats(log_level = logging.DEBUG):
         per_time = total_time / count
         logging.log(log_level, "\t{:<25} {:<8} {:<8.3f}".format(k.lower(), count, per_time * 1000))
 
+xy_cache = {}
+
+def get_xy_matrix(h, w):
+    """ Returns 2xhxw matrix with xy locations. """
+
+    key = (h,w)
+
+    if key in xy_cache:
+        return xy_cache[key]
+
+    xy = np.zeros((2, h, w))
+    for y in range(h):
+        for x in range(w):
+            xy[:, x, y] = (x / w, y / h)
+
+    xy_cache[key] = xy
+    return xy
 
 # Converts and down-samples the input image
 @track_time_taken
@@ -288,11 +306,7 @@ def preprocess(img):
     # add xy if needed
     if config.include_xy:
         c, h, w = img.shape
-        xy = np.zeros((2,h,w))
-        for y in range(h):
-            for x in range(w):
-                xy[:,x,y] = (x/w,y/h)
-        img = np.concatenate((img, xy), axis=0)
+        img = np.concatenate((img, get_xy_matrix(h, w)), axis=0)
 
     # convert from float32 to uint8
     img = np.uint8(img * 255)
@@ -1747,6 +1761,7 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default=0.0, help="weight decay for optimizer")
     parser.add_argument('--optimizer', type=str, default = "rmsprop", help="adam | rmsprop | rmsprop_centered")
     parser.add_argument('--include_xy', type=str2bool, default = False, help="if true includes xy location as a channel.")
+    parser.add_argument('--output_path', type=str, default="runs", help="path to store experiment results.")
 
     args = parser.parse_args()
 
