@@ -89,7 +89,7 @@ def run_job(experiment, job_name, kwargs):
     subprocess.call([get_python(),get_train_script(),"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
-                    ["--output_path='{}'".format(args.output_path)] +
+                    #(['--output_path="{}"'.format(args.output_path)] if args.output_path is not None else []) +
                     ["--{}={}".format(k,v) for k,v in kwargs.items()])
 
 
@@ -130,7 +130,7 @@ def process_eval(experiment, eval_results_suffix, **kwargs):
                         ["--job_name={}".format(job_name)] +
                         ["--job_id={}".format(job_id)] +
                         ["--eval_results_suffix={}".format(eval_results_suffix)] +
-                        ["--output_path='{}'".format(args.output_path)] +
+                        #(['--output_path="{}"'.format(args.output_path)] if args.output_path is not None else []) +
                         ["--{}={}".format(k, v) for k, v in kwargs.items()])
 
 
@@ -377,7 +377,7 @@ elif args.trial == "take_cover":
     if args.mode == "run":
         args.mode = "search"
 else:
-    print("Invalid trial name '{}'".format(args.trial))
+    print("Invalid trial name {}".format(args.trial))
     exit(-1)
 
 # set thread limit for worker
