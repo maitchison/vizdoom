@@ -43,6 +43,9 @@ import argparse
 import subprocess
 import os
 import sys
+import random
+import configparser
+import platform
 import numpy as np
 
 
@@ -89,7 +92,7 @@ def run_job(experiment, job_name, kwargs):
     subprocess.call([get_python(),get_train_script(),"train"] +
                     ["--experiment={}".format(experiment)]+
                     ["--job_name={}".format(job_name)]+
-                    #(['--output_path="{}"'.format(args.output_path)] if args.output_path is not None else []) +
+                    (['--output_path={}'.format(args.output_path)] if args.output_path is not None else []) +
                     ["--{}={}".format(k,v) for k,v in kwargs.items()])
 
 
@@ -106,11 +109,12 @@ def process_eval(experiment, eval_results_suffix, **kwargs):
     jobs_to_evaluate = []
 
     for r, d, f in os.walk(os.path.join(args.output_path, experiment)):
+
         folder = os.path.basename(r)
         if len(folder.split()) < 2:
             continue
 
-        job_name = folder.split()[0]
+        job_name = folder.split()[0].strip()
         job_id = folder.split()[1][1:-1]
         for file_name in f:
             if file_name == "results_complete.dat":
@@ -120,19 +124,54 @@ def process_eval(experiment, eval_results_suffix, **kwargs):
                 if os.path.exists(results_file_path):
                     continue
 
-                jobs_to_evaluate.append((
-                    job_name, job_id
-                ))
+                jobs_to_evaluate.append((job_id, job_name, results_file_path ))
 
-    for job_name, job_id in jobs_to_evaluate:
+    random.shuffle(jobs_to_evaluate)
+
+    for (job_id, job_name, results_file_path ) in jobs_to_evaluate:
+        # check (again) if the results file exists... just in case someone else if working on this...
+        if os.path.exists(results_file_path):
+            continue
+
         subprocess.call([get_python(), get_train_script(), "eval"] +
                         ["--experiment={}".format(experiment)] +
                         ["--job_name={}".format(job_name)] +
                         ["--job_id={}".format(job_id)] +
                         ["--eval_results_suffix={}".format(eval_results_suffix)] +
-                        #(['--output_path="{}"'.format(args.output_path)] if args.output_path is not None else []) +
+                        (['--output_path={}'.format(args.output_path)] if args.output_path is not None else []) +
                         ["--{}={}".format(k, v) for k, v in kwargs.items()])
 
+
+def safe_cast(x):
+    try:
+        return int(str(x))
+    except:
+        try:
+            return float(str(x))
+        except:
+            return x
+
+
+def get_default_argument(argument):
+
+    default = None
+
+    # first some default values
+    if argument == "optimizer":
+        default = "rmsprop"
+    elif argument == "output_path":
+        default = "runs"
+    elif argument == "include_xy":
+        default = False
+
+    hostname = platform.node()
+
+    # check ini file override
+    if hostname in ini_file:
+        if argument in ini_file[hostname]:
+            default = safe_cast(ini_file[hostname][argument])
+
+    return default
 
 
 def show_job_count(experiment, job_name, repeats):
@@ -140,13 +179,16 @@ def show_job_count(experiment, job_name, repeats):
     print("{:<40} {}/{}".format(experiment+' '+job_name, count_jobs(experiment, job_name), repeats))
 
 
+ini_file = configparser.ConfigParser()
+ini_file.read("config.ini")
+
 parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
 parser.add_argument('mode', type=str, help='count | run | search | eval')
 parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=1, help='Number of times to repeat each trial.')
 parser.add_argument('--train_script', type=str, default=None, help='Script to use to train.')
 parser.add_argument('--threads', type=int, help='CPU threads for workers.')
-parser.add_argument('--output_path', type=str, default="runs", help='Path to output experiment results to.')
+parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help='Path to output experiment results to.')
 
 args = parser.parse_args()
 
@@ -252,18 +294,18 @@ elif args.trial == "include_xy":
             ("include_xy={}".format(include_xy), {
             'include_xy':               include_xy,
             'end_eps':                  0.10,
-            'target_update':            200,
+            'target_update':            100,
             'learning_steps_per_epoch': 5000,
             'update_every':             4,
             'replay_memory_size':       10000,
             'batch_size':               32,
             'num_stacks':               4,
-            'learning_rate':            3e-4,
+            'learning_rate':            1e-4,
             'health_as_reward':         True,
             'frame_repeat':             10,
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
             'epochs':                   200,
-            'max_pool':                 False,
+            'max_pool':                 True,
             'test_episodes_per_epoch':  25,
         }))
 elif args.trial == "weight_decay":
@@ -341,8 +383,9 @@ elif args.trial == "search_1":
             'learning_rate':            np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
             'max_pool':                 np.random.choice([True, False]),
             'use_color':                np.random.choice([True, False]),
+            'include_xy': np.random.choice([True, False]),
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
-            'frame_repeat':             np.random.choice([7, 10]),
+            'frame_repeat':             np.random.choice([7, 10, 14]),
             'learning_steps_per_epoch': 5000,
             'test_episodes_per_epoch':  25,
             'update_every':             4,
@@ -364,6 +407,7 @@ elif args.trial == "take_cover":
             'learning_rate':            np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
             'max_pool':                 np.random.choice([True, False]),
             'use_color':                np.random.choice([True, False]),
+            'include_xy': np.random.choice([True, False]),
             'config_file_path': "scenarios/take_cover.cfg",
             'frame_repeat':             np.random.choice([7, 10, 14]),
             'learning_steps_per_epoch': 5000,
@@ -403,6 +447,7 @@ elif args.mode == "run":
                 **job_args
             )
 elif args.mode == "eval":
+    random.shuffle(jobs) # process jobs in random order.
     for results_suffix, job_args in jobs:
         process_eval(
             experiment=args.trial,

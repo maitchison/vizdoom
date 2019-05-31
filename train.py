@@ -50,6 +50,8 @@ import os.path
 import cv2
 import uuid
 
+import configparser
+
 import shutil
 import logging
 import platform
@@ -90,6 +92,16 @@ starting_locations = set()
 criterion = nn.MSELoss()
 
 # --------------------------------------------------------
+
+def safe_cast(x):
+    try:
+        return int(str(x))
+    except:
+        try:
+            return float(str(x))
+        except:
+            return x
+
 
 def clean(s):
     valid_chars = '-_.() abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
@@ -895,6 +907,7 @@ def handle_keypress():
         elif c == "i":
             print()
             logging.critical("***** ID {} - {} [{}]".format(config.experiment, config.job_name, config.job_id))
+            logging.critical("Outputting results to {}".format(config.job_folder))
         elif c == "h":
             print()
             logging.critical("**** H for help")
@@ -1487,6 +1500,7 @@ def run_eval():
     override_test_episodes_per_epoch = config.test_episodes_per_epoch
     override_rand_seed = config.rand_seed
     override_eval_results_suffix = config.eval_results_suffix
+    override_output_path = config.output_path
 
     config_filename = os.path.join(config.job_folder, "results_partial.dat")
     results = pickle.load(open(config_filename, "rb"))
@@ -1508,9 +1522,16 @@ def run_eval():
         config.use_color = True
     if "model" not in config.__dict__.keys():
         config.model = "basic"
+    if "include_xy" not in config.__dict__.keys():
+        config.include_xy = False
+
+
+    config.job_name = config.job_name.strip()
 
     # make sure we use the correct device.
     config.device = override_device
+
+    config.output_path = override_output_path
 
     # put results suffix on.
     config.eval_results_suffix = override_eval_results_suffix
@@ -1719,9 +1740,33 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
+def get_default_argument(argument):
+
+    default = None
+
+    # first some default values
+    if argument == "optimizer":
+        default = "rmsprop"
+    elif argument == "output_path":
+        default = "runs"
+    elif argument == "include_xy":
+        default = False
+
+    # check ini file override
+    if config.hostname in ini_file:
+        if argument in ini_file[config.hostname]:
+            default = safe_cast(ini_file[config.hostname][argument])
+
+    return default
+
+
 if __name__ == '__main__':
 
     config = Config()
+
+    ini_file = configparser.ConfigParser()
+    ini_file.read("config.ini")
+
 
     # handle parameters
     parser = argparse.ArgumentParser(description='Run VizDoom Tests.')
@@ -1759,15 +1804,20 @@ if __name__ == '__main__':
     parser.add_argument('--eval_results_suffix', type=str, default="", help="Filename suffix for evaluation results.")
     parser.add_argument('--model', type=str, default="basic", help="Name of model to use basic | tall | fat | deep")
     parser.add_argument('--weight_decay', type=float, default=0.0, help="weight decay for optimizer")
-    parser.add_argument('--optimizer', type=str, default = "rmsprop", help="adam | rmsprop | rmsprop_centered")
-    parser.add_argument('--include_xy', type=str2bool, default = False, help="if true includes xy location as a channel.")
-    parser.add_argument('--output_path', type=str, default="runs", help="path to store experiment results.")
+    parser.add_argument('--optimizer', type=str, default=get_default_argument("optimizer"), help="adam | rmsprop | rmsprop_centered")
+    parser.add_argument('--include_xy', type=str2bool, default=get_default_argument("include_xy"), help="if true includes xy location as a channel.")
+    parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help="path to store experiment results.")
+
 
     args = parser.parse_args()
 
     config.mode = config.mode.lower()
 
     config.apply_args(args)
+
+    if not os.path.exists(config.output_path):
+        raise Exception("Output folder {} not found, please create it.".format(config.output_path))
+
     config.make_job_folder()
 
     log_name = "log.txt" if args.mode in ["training", "benchmark", "test"] else args.mode+".txt"
@@ -1793,6 +1843,7 @@ if __name__ == '__main__':
     elif config.mode == "continue":
         train_agent(continue_from_save=True)
     elif config.mode == "info":
+        print("Hostname:", config.hostname)
         print("Python:", sys.version)
         print("PyTorch:", torch.__version__)
         print("ViZDoom:", vzd.__version__)
