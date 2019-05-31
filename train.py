@@ -251,6 +251,19 @@ class Config:
 
     def rename_job_folder(self):
         """ moves job to completed folder. """
+
+        # first make sure that we have completed writing the final files
+
+        completed_file = os.path.join(self.job_folder, "results_complete.dat")
+
+        # wait 5 minutes for final file to copy across before renaming folder.
+        for _ in range(5):
+            if os.path.exists(completed_file) and os.stat(completed_file).st_size > 0:
+                break
+            sleep(60)
+        else:
+            logging.critical("Warning: timeout while waiting for file {} to finish.".format(completed_file))
+
         for _ in range(3):
             try:
                 os.rename(self.job_folder, self.final_job_folder)
@@ -621,7 +634,7 @@ class DeepNet(nn.Module):
         )
 
         # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 5, 5]
+        final_shape = [64, 4, 4]
         self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
@@ -935,6 +948,12 @@ def handle_keypress():
                 else:
                     print("{}:{}".format(k, v))
             print("-" * 60)
+        elif c == 'z':
+            logging.critical("**** Open subprocesses: {}".format([current_processes[p.pid][0] for p in get_open_processes()]))
+        elif c == 'j':
+            logging.critical("Joining subprocesses: {}".format([current_processes[p.pid][0] for p in get_open_processes()]))
+            join_open_processes()
+            logging.critical("Done.")
         else:
             print()
             logging.critical("\nInvalid input {}.\n".format(c))
@@ -1006,8 +1025,10 @@ def reset_agent(episode=0):
         push_state(get_observation(), get_data())
 
 
-def save_video(folder, filename, frames, frame_rate=60):
+def save_video(path, frames, frame_rate=60):
     """ Saves given frames (list of np arrays) to video file. """
+
+    folder, filename = os.path.split(path)
 
     logging.info("Exporting video example {}.".format(filename))
 
@@ -1027,6 +1048,33 @@ def save_video(folder, filename, frames, frame_rate=60):
 
     out.release()
     cv2.destroyAllWindows()
+
+
+current_processes = {}
+
+def get_open_processes():
+    """ Returns list of currently open processes. """
+    open_processes = []
+    for temp_file, p in current_processes.values():
+        if p.poll() is None:
+            open_processes.append(p)
+    return open_processes
+
+def join_open_processes():
+    """ Waits for all currently open processes to finish. """
+    for temp_file, p in current_processes.values():
+        if p.poll() is None:
+            p.wait()
+
+
+
+def _cached_write(temp_file, destination_file, f):
+    """ Executes function f, creating temp_filename then moves results to destination as a background process
+        This helps performance when destination path is a networked drive.
+    """
+    f(temp_file)
+    p = subprocess.Popen(["mv", temp_file, destination_file])
+    current_processes[p.pid] = (temp_file, p)
 
 
 def get_stack():
@@ -1163,8 +1211,6 @@ def export_video(epoch):
 
     while not game.is_episode_finished():
 
-        # todo: change this so we can sample from frame_repeat
-
         if frame_repeat_cooldown <= 0:
             # only make decisions at the correct frame rate
             push_state(get_observation(), get_data())
@@ -1183,7 +1229,9 @@ def export_video(epoch):
     game, game_hq = game_hq, game
 
     try:
-        save_video(os.path.join(config.job_folder, "videos"), "epoch-{0:03d}.mp4".format(epoch), frames)
+        destination_file = os.path.join(config.job_folder, "videos", "epoch-{0:03d}.mp4".format(epoch))
+        temp_file = os.path.join("temp", "{}-{:03d}.mp4".format(config.job_id,epoch))
+        _cached_write(temp_file, destination_file, lambda x: save_video(x, frames, frame_rate=35))
     except Exception as e:
         logging.critical("Error saving video: {}".format(e))
 
@@ -1334,7 +1382,7 @@ def train_agent(continue_from_save=False):
 
         show_time_stats()
 
-        if config.export_video and (((epoch+1) % 25 == 0 or epoch == config.epochs-1)):
+        if config.export_video and (((epoch+1) % 25 == 0 or epoch == config.epochs-1 or epoch == 0)):
             logging.info("Exporting video...")
             export_video(epoch+1)
 
@@ -1424,6 +1472,13 @@ def train_agent(continue_from_save=False):
         log.close()
         logging.getLogger().removeHandler(log)
 
+    # wait for processes to finish
+    if len(get_open_processes()) > 0:
+        print("Waiting for processes:",end='')
+    while len(get_open_processes()) > 0:
+        print(format([current_processes[p.pid][0] for p in get_open_processes()]))
+        sleep(30)
+
     if config.mode == "train":
         sleep(10)  # give Dropbox a chance to sync up, and logs etc to finish up.
         config.rename_job_folder()
@@ -1442,25 +1497,20 @@ def save_results(results, suffix=""):
 @track_time_taken
 def save_model(epoch=None):
 
-    filename = "model_{0:03d}.dat".format(epoch)
     os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
 
     if epoch is None:
         destination_file = os.path.join(config.job_folder, "model_complete.dat")
     else:
+        filename = "model_{0:03d}.dat".format(epoch)
         destination_file = os.path.join(config.job_folder, "models", filename)
 
     temp_file = os.path.join("temp","{}-{}.tmp".format(config.job_id, epoch if epoch is not None else ""))
 
     os.makedirs("temp", exist_ok=True)
 
-    torch.save(policy_model, temp_file)
-
     # copy the file across
-    # if the destination is a networked drive it is much faster to save it locally then copy it across.
-    # this occurs in background so we can train while copying.
-    subprocess.Popen(["mv",temp_file, destination_file])
-
+    _cached_write(temp_file, destination_file, lambda x: torch.save(policy_model, x))
 
 def restore_model(epoch=None):
     """ restores model from checkpoint. """
