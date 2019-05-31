@@ -1067,6 +1067,13 @@ def get_frame_repeat(training=True):
         # gaussian
         _, mu, sigma = code.split("_")
         repeat = np.random.normal(float(mu), float(sigma))
+    elif code[0] == 'f':
+        # gaussian on delay instead of frame_rate
+        _, mu, sigma = code.split("_")
+        delay = np.random.normal(float(mu) / 35, float(sigma) / 35) # doom runs at 35 fps
+        if delay < 1e-3: # cap to skips of 1,000
+            delay = 1e-3
+        repeat = round(1 / delay)
     elif code[0] == 'u':
         # uniform
         _, b, a = code.split("_")
@@ -1429,6 +1436,7 @@ def save_results(results, suffix=""):
     generate_graphs(results)
 
 
+@track_time_taken
 def save_model(epoch=None):
     if epoch is None:
         torch.save(policy_model, os.path.join(config.job_folder, "model_complete.dat"))

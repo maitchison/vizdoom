@@ -197,9 +197,38 @@ jobs = []
 frame_repeat_list = [
     1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 35*2, 35*3, 35*4,
     "g_7_0", "g_7_0.5", "g_7_1", "g_7_1.5", "g_7_2", "g_7_3", "g_7_4", "g_7_8",
-    "g_10_0", "g_10_0.25", "g_10_0.5", "g_10_0.75", "g_10_1", "g_10_2", "g_10_4 ", "g_10_8",
+    "g_10_0", "g_10_0.25", "g_10_0.5", "g_10_0.75", "g_10_1", "g_10_2", "g_10_4", "g_10_8",
     "p_5", "p_7", "p_10", "p_20", "p_40"
 ]
+
+frame_repeat_list_2 = [7, "f_7_0", "f_7_1", "f_7_2", "f_7_4"]
+
+if args.trial == "frame_delay":
+    for frame_repeat in frame_repeat_list_2:
+        jobs.append(
+            ("frame_repeat={}".format(frame_repeat), {
+            'frame_repeat':             frame_repeat,
+            'target_update':            100,
+            'learning_steps_per_epoch': 5000,
+            'update_every':             4,
+            'replay_memory_size':       10000,
+            'batch_size':               32,
+            'num_stacks':               4,
+            'learning_rate':            1e-4,
+            'health_as_reward':         True,
+            'include_xy':               True,
+            'config_file_path': "scenarios/health_gathering_supreme.cfg",
+            'epochs':                   200,
+            'test_episodes_per_epoch':  25,
+        }))
+elif args.trial == "frame_delay_eval":
+    for frame_repeat in reversed(frame_repeat_list_2):
+        jobs.append(
+            ("_frame_repeat={}".format(frame_repeat), {
+            'test_frame_repeat':        frame_repeat,
+            'test_episodes_per_epoch':  1000,
+        }))
+    args.trial = "frame_repeat_2"
 
 if args.trial == "frame_repeat":
     for frame_repeat in frame_repeat_list:
@@ -226,6 +255,8 @@ elif args.trial == "frame_repeat_eval":
             'test_episodes_per_epoch':  100,
         }))
     args.trial = "frame_repeat"
+
+
 elif args.trial == "end_epsilon":
     # look into epsilon decay
     for end_eps in [0.2,0.1,0.05,0.025,0]:
@@ -308,8 +339,8 @@ elif args.trial == "include_xy":
             'max_pool':                 True,
             'test_episodes_per_epoch':  25,
         }))
-elif args.trial == "weight_decay":
-    for weight_decay in [1e-1, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 1e-6, 1e-7, 1e-8, 0]:
+elif args.trial == "weight_decay_2":
+    for weight_decay in [1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6, 0]:
         jobs.append(
             ("weight_decay={}".format(weight_decay), {
             'weight_decay':             weight_decay,
@@ -320,7 +351,7 @@ elif args.trial == "weight_decay":
             'replay_memory_size':       10000,
             'batch_size':               32,
             'num_stacks':               4,
-            'learning_rate':            3e-4,
+            'learning_rate':            1e-4,
             'health_as_reward':         True,
             'frame_repeat':             10,
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
@@ -350,8 +381,8 @@ elif args.trial == "optimizer":
                 'test_episodes_per_epoch':  25,
             }))
 elif args.trial == "model":
-    for model in ["basic", "tall", "fat", "deep"]:
-        for learning_rate in [1e-5, 3e-5, 10e-5, 30e-5, 100e-5]:
+    for learning_rate in [1e-4, 3e-5, 3e-4]:
+        for model in ["basic", "tall", "fat", "deep"]:
             jobs.append(
                 ("model={} lr={}".format(model, learning_rate), {
                 'model':                    model,
@@ -370,7 +401,7 @@ elif args.trial == "model":
                 'max_pool':                 True,
                 'test_episodes_per_epoch':  25,
             }))
-elif args.trial == "search_1":
+elif args.trial == "health_gathering_supreme":
     for i in range(args.repeats):
         # pick random parameters
         jobs.append(
@@ -383,7 +414,10 @@ elif args.trial == "search_1":
             'learning_rate':            np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
             'max_pool':                 np.random.choice([True, False]),
             'use_color':                np.random.choice([True, False]),
-            'include_xy': np.random.choice([True, False]),
+            'include_xy':               np.random.choice([True, False]),
+            'end_epsilon':              np.random.choice([0, 0.1, 0.03, 0.01]),
+            'weight_decay':             np.random.choice([0, 1e-5, 1e-4, 1e-3]),
+            'optimizer':                np.random.choice(["adam", "rmsprop", "rmsprop_centered"]),
             'config_file_path': "scenarios/health_gathering_supreme.cfg",
             'frame_repeat':             np.random.choice([7, 10, 14]),
             'learning_steps_per_epoch': 5000,
@@ -402,12 +436,15 @@ elif args.trial == "take_cover":
         jobs.append(
             ("sample", {
             'num_stacks':               np.random.choice([1, 2, 4, 8]),
-            'target_update':            np.random.choice([-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 6400*2]),
+            'target_update':            np.random.choice([-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800]),
             'hidden_units':             np.random.choice([32, 64, 128, 256, 512, 1024, 2048]),
             'learning_rate':            np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
             'max_pool':                 np.random.choice([True, False]),
             'use_color':                np.random.choice([True, False]),
-            'include_xy': np.random.choice([True, False]),
+            'include_xy':               np.random.choice([True, False]),
+            'end_epsilon':              np.random.choice([0, 0.1, 0.03, 0.01]),
+            'weight_decay':             np.random.choice([0, 1e-5, 1e-4, 1e-3]),
+            'optimizer':                np.random.choice(["adam", "rmsprop", "rmsprop_centered"]),
             'config_file_path': "scenarios/take_cover.cfg",
             'frame_repeat':             np.random.choice([7, 10, 14]),
             'learning_steps_per_epoch': 5000,
