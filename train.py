@@ -1332,7 +1332,7 @@ def train_agent(continue_from_save=False):
 
         show_time_stats()
 
-        if config.export_video and (((epoch+1) % 25 == 0 or epoch == config.epochs-1) or epoch == 0):
+        if config.export_video and (((epoch+1) % 25 == 0 or epoch == config.epochs-1)):
             logging.info("Exporting video...")
             export_video(epoch+1)
 
