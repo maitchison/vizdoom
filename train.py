@@ -1187,7 +1187,7 @@ def eval_model(generate_video=False):
         test_scores_reward.append(get_final_score(health_as_reward=False))
 
         if generate_video:
-            save_video("./", "example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
+            save_video("./example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
 
     return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
 

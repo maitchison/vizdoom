@@ -229,8 +229,7 @@ elif args.trial == "frame_delay_eval":
             'test_episodes_per_epoch':  1000,
         }))
     args.trial = "frame_repeat_2"
-
-if args.trial == "frame_repeat":
+elif args.trial == "frame_repeat":
     for frame_repeat in frame_repeat_list:
         jobs.append(
             ("frame_repeat={}".format(frame_repeat), {
@@ -361,7 +360,7 @@ elif args.trial == "weight_decay_2":
         }))
 elif args.trial == "optimizer":
     for optimizer in ["adam", "rmsprop", "rmsprop_centered"]:
-        for learning_rate in [1e-5, 3e-5, 10e-5, 30e-5, 100e-5]:
+        for learning_rate in [3e-5, 1e-4, 3e-4, 1e-3]:
             jobs.append(
                 ("optimizer={} lr={}".format(optimizer, learning_rate), {
                 'optimizer':                optimizer,
