@@ -246,6 +246,8 @@ class Config:
     def make_job_folder(self):
         """create the job folder"""
         os.makedirs(self.job_folder, exist_ok=True)
+        os.makedirs(os.path.join(self.job_folder, "models"), exist_ok=True)
+        os.makedirs(os.path.join(self.job_folder, "videos"), exist_ok=True)
 
     def rename_job_folder(self):
         """ moves job to completed folder. """
@@ -1439,13 +1441,14 @@ def save_results(results, suffix=""):
 
 @track_time_taken
 def save_model(epoch=None):
+
+    filename = "model_{0:03d}.dat".format(epoch)
+    os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
+
     if epoch is None:
         destination_file = os.path.join(config.job_folder, "model_complete.dat")
     else:
-        filename = "model_{0:03d}.dat".format(epoch)
-        os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
         destination_file = os.path.join(config.job_folder, "models", filename)
-
 
     temp_file = os.path.join("temp","{}-{}.tmp".format(config.job_id, epoch if epoch is not None else ""))
 
