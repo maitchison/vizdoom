@@ -51,6 +51,7 @@ import cv2
 import uuid
 
 import configparser
+import subprocess
 
 import shutil
 import logging
@@ -282,7 +283,7 @@ def show_time_stats(log_level = logging.DEBUG):
     for k,v in time_stats.items():
         count, total_time = v
         per_time = total_time / count
-        logging.log(log_level, "\t{:<25} {:<8} {:<8.3f}".format(k.lower(), count, per_time * 1000))
+        logging.log(log_level, "\t{:<25} {:<8} {:<8.1f}".format(k.lower(), count, per_time * 1000))
 
 xy_cache = {}
 
@@ -1439,11 +1440,23 @@ def save_results(results, suffix=""):
 @track_time_taken
 def save_model(epoch=None):
     if epoch is None:
-        torch.save(policy_model, os.path.join(config.job_folder, "model_complete.dat"))
+        destination_file = os.path.join(config.job_folder, "model_complete.dat")
     else:
         filename = "model_{0:03d}.dat".format(epoch)
         os.makedirs(os.path.join(config.job_folder, "models"), exist_ok=True)
-        torch.save(policy_model, os.path.join(config.job_folder, "models", filename))
+        destination_file = os.path.join(config.job_folder, "models", filename)
+
+
+    temp_file = os.path.join("temp","{}-{}.tmp".format(config.job_id, epoch if epoch is not None else ""))
+
+    os.makedirs("temp", exist_ok=True)
+
+    torch.save(policy_model, temp_file)
+
+    # copy the file across
+    # if the destination is a networked drive it is much faster to save it locally then copy it across.
+    # this occurs in background so we can train while copying.
+    subprocess.Popen(["mv",temp_file, destination_file])
 
 
 def restore_model(epoch=None):
