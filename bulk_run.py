@@ -319,25 +319,26 @@ elif args.trial == "use_color":
             'test_episodes_per_epoch':  25,
         }))
 elif args.trial == "include_xy":
-    for include_xy in [True, False]:
-        jobs.append(
-            ("include_xy={}".format(include_xy), {
-            'include_xy':               include_xy,
-            'end_eps':                  0.10,
-            'target_update':            100,
-            'learning_steps_per_epoch': 5000,
-            'update_every':             4,
-            'replay_memory_size':       10000,
-            'batch_size':               32,
-            'num_stacks':               4,
-            'learning_rate':            1e-4,
-            'health_as_reward':         True,
-            'frame_repeat':             10,
-            'config_file_path': "scenarios/health_gathering_supreme.cfg",
-            'epochs':                   200,
-            'max_pool':                 True,
-            'test_episodes_per_epoch':  25,
-        }))
+    for learning_rate in [1e-4, 3e-4]:
+        for include_xy in [True, False]:
+            jobs.append(
+                ("include_xy={} learning_rate={}".format(include_xy, learning_rate), {
+                'include_xy':               include_xy,
+                'end_eps':                  0.10,
+                'target_update':            100,
+                'learning_steps_per_epoch': 5000,
+                'update_every':             4,
+                'replay_memory_size':       10000,
+                'batch_size':               32,
+                'num_stacks':               4,
+                'learning_rate':            learning_rate,
+                'health_as_reward':         True,
+                'frame_repeat':             10,
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'epochs':                   200,
+                'max_pool':                 True,
+                'test_episodes_per_epoch':  25,
+            }))
 elif args.trial == "weight_decay_2":
     for weight_decay in [1e-3, 3e-4, 1e-4, 3e-5, 1e-5, 3e-6, 1e-6, 0]:
         jobs.append(
@@ -435,6 +436,8 @@ elif args.trial == "take_cover":
         jobs.append(
             ("sample", {
             'num_stacks':               np.random.choice([1, 2, 4, 8]),
+            'discount_factor':          np.random.choice([1, 0.99, 0.98]),
+            'replay_memory_size':       np.random.choice([3000,10000,30000]),
             'target_update':            np.random.choice([-1, 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800]),
             'hidden_units':             np.random.choice([32, 64, 128, 256, 512, 1024, 2048]),
             'learning_rate':            np.random.choice([0.1e-4, 0.3e-4, 1e-4, 3e-4, 10e-4, 30e-4]),
