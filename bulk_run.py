@@ -553,7 +553,6 @@ elif args.trial == "dfr_take_cover":
             'epochs':                   200,
             'batch_size':               32,
             'health_as_reward':         False,
-            'terminate_early':          True,
             'config_file_path': "scenarios/take_cover.cfg"
             }))
 
