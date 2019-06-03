@@ -146,6 +146,8 @@ class Config:
         self.resolution = (84, 84)
         self.verbose = False
         self.max_pool = False
+        self.dynamic_frame_repeat = False
+        self.dfr_decision_cost = 0.0
         self.end_eps_step = None
         self.config_file_path = "scenarios/health_gathering.cfg"
         self.job_id = uuid.uuid4().hex[:16]
@@ -772,7 +774,14 @@ def exploration_rate(step):
 
 
 @track_time_taken
-def env_step(action, frame_repeat):
+def env_step(action, frame_repeat_code):
+    """
+    Take environmental step
+    :param action: action, list of 0,1 for each button.
+    :param frame_repeat_code: code, either integer frame skip, or code for random skips.
+    :return:
+    """
+    frame_repeat = convert_frame_repeat(frame_repeat_code)
     return game.make_action(action, frame_repeat)
 
 
@@ -823,7 +832,7 @@ def perform_environment_step(step):
     global last_total_shaping_reward
 
     # give some time for this to catch up...
-    reward = env_step(actions[a], get_frame_repeat())
+    reward = env_step(*actions[a])
 
     if config.health_as_reward:
         current_health = game.get_game_variable(vzd.GameVariable.HEALTH)
@@ -841,6 +850,9 @@ def perform_environment_step(step):
         logging.critical("Unusually large shaping reward found {}.".format(shaping_reward))
 
     reward += shaping_reward
+
+    if config.dynamic_frame_repeat:
+        reward -= config.dfr_decision_cost
 
     isterminal = game.is_episode_finished()
 
@@ -862,7 +874,6 @@ def initialize_vizdoom():
 
     global game
     global game_hq
-    global actions
 
     if game is not None:
         game.close()
@@ -889,12 +900,31 @@ def initialize_vizdoom():
         game_hq.set_screen_resolution(preview_screen_resolution)
         game_hq.init()
 
-    # Action = which buttons are pressed
-    n = game.get_available_buttons_size()
-    actions = [list(a) for a in it.product([0, 1], repeat=n)]
+    initialize_actions(config.frame_repeat)
 
     logging.info("Doom initialized.")
 
+
+def initialize_actions(base_skip):
+
+    global actions
+
+    # Action = which buttons are pressed
+    n = game.get_available_buttons_size()
+
+    if config.dynamic_frame_repeat:
+        # extend actions with repeat counts
+        if type(base_skip) is not int:
+            raise Exception("Dynamic frame repeat requires an integer frame_repeat.")
+        low_skip = max(int(base_skip * 0.7), 1)
+        med_skip = int(base_skip * 1.0)
+        high_skip = int(base_skip * 1.4)
+
+        actions = []
+        for skip in [low_skip, med_skip, high_skip]:
+            actions += [(list(a), skip) for a in it.product([0, 1], repeat=n)]
+    else:
+        actions = [(list(a), base_skip) for a in it.product([0, 1], repeat=n)]
 
 @track_time_taken
 def update_target():
@@ -1093,16 +1123,7 @@ def get_obs():
     )
 
 
-def get_frame_repeat(training=True):
-    """
-    Gets frame repeat in either testing or training mode.
-    :param training: True when training, false when testing.
-    :return: The sampled frame skip value.
-    """
-    if training:
-        code = config.frame_repeat
-    else:
-        code = config.test_frame_repeat if config.test_frame_repeat is not None else config.frame_repeat
+def convert_frame_repeat(code):
 
     # we convert code to an integer if possible
     try:
@@ -1121,8 +1142,8 @@ def get_frame_repeat(training=True):
     elif code[0] == 'f':
         # gaussian on delay instead of frame_rate
         _, mu, sigma = code.split("_")
-        delay = np.random.normal(float(mu) / 35, float(sigma) / 35) # doom runs at 35 fps
-        if delay < 1e-3: # cap to skips of 1,000
+        delay = np.random.normal(float(mu) / 35, float(sigma) / 35)  # doom runs at 35 fps
+        if delay < 1e-3:  # cap to skips of 1,000
             delay = 1e-3
         repeat = round(1 / delay)
     elif code[0] == 'u':
@@ -1149,14 +1170,22 @@ def eval_model(generate_video=False):
 
     policy_model.eval()
     test_scores = []
+    actions_taken = []
     test_scores_health = []
     test_scores_reward = []
 
+    if config.test_frame_repeat is not None:
+        initialize_actions(config.test_frame_repeat)
+    else:
+        initialize_actions(config.frame_repeat)
+
     for test_episode in trange(config.test_episodes_per_epoch, leave=False):
+
         reset_agent(test_episode)
         step = 0
 
         frames = []
+        actions_this_episode = []
 
         while not game.is_episode_finished():
             handle_keypress()
@@ -1168,7 +1197,9 @@ def eval_model(generate_video=False):
 
             best_action_index = get_best_action(s1, d1)
 
-            reward = env_step(actions[best_action_index], get_frame_repeat(training=False))
+            actions_this_episode.append(actions[best_action_index])
+
+            reward = env_step(*actions[best_action_index])
 
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
 
@@ -1183,13 +1214,14 @@ def eval_model(generate_video=False):
 
         # make sure to record both the reward score, and the health as reward score.
         test_scores.append(get_final_score())
+        actions_taken.append(actions_this_episode[:])
         test_scores_health.append(get_final_score(health_as_reward=True))
         test_scores_reward.append(get_final_score(health_as_reward=False))
 
         if generate_video:
             save_video("./example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
 
-    return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward)
+    return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward), actions_taken
 
 
 def export_video(epoch):
@@ -1206,6 +1238,7 @@ def export_video(epoch):
     reset_agent(0)
     step = 0
     best_action_index = 0
+    best_action, best_skip = actions[best_action_index]
 
     frame_repeat_cooldown = 0
 
@@ -1216,12 +1249,13 @@ def export_video(epoch):
             push_state(get_observation(), get_data())
             s, d = get_stack()
             best_action_index = get_best_action(s, d)
-            frame_repeat_cooldown = get_frame_repeat(training=False)
+            best_action, best_skip = actions[best_action_index]
+            frame_repeat_cooldown = convert_frame_repeat(best_skip)
 
         # we generate all frames for smooth video, even though
         # actions may stick for multiple frames.
         frames.append(game.get_state().screen_buffer)
-        _ = game.make_action(actions[best_action_index], 1)
+        _ = game.make_action(best_action, 1)
         step += 1
         frame_repeat_cooldown -= 1
 
@@ -1246,6 +1280,35 @@ def get_optimizer():
         return torch.optim.Adam(policy_model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     else:
         raise Exception("Invalid optimizer name {}".format(config.optimizer))
+
+
+def print_action_stats(actions_taken):
+    """ Prints stats on actions taken by agent.
+    :param actions_taken: List of lists of tuple (button presses, frame_skip)
+    """
+
+    button_history = []
+    frame_skip_history = []
+
+    for episode_actions in actions_taken:
+        for buttons, frame_skip in episode_actions:
+            button_history.append(tuple(buttons))
+            frame_skip_history.append(frame_skip)
+
+    # print button combinations
+    button_options = set(tuple(buttons) for buttons, frame_skip in actions)
+    frame_skip_options = set(frame_skip for buttons, frame_skip in actions)
+
+    for button in button_options:
+        percent = button_history.count(button) / len(button_history) * 100
+        logging.critical("{:<20} {:.1f}%".format(str(button), percent))
+    if len(frame_skip_options) > 1:
+        for frame_skip in frame_skip_options:
+            percent = frame_skip_history.count(frame_skip) / len(frame_skip_history) * 100
+            logging.critical("{:<20} {:.1f}%".format(str(frame_skip), percent))
+
+
+
 
 def train_agent(continue_from_save=False):
     """ Run a test with given parameters, returns stats in dictionary. """
@@ -1283,6 +1346,7 @@ def train_agent(continue_from_save=False):
     results["test_scores_health"] = []
     results["test_scores_reward"] = []
     results["test_scores_mean"] = []
+    results["test_actions"] = []
     results["config"] = config
     results["args"] = config.args
 
@@ -1387,7 +1451,9 @@ def train_agent(continue_from_save=False):
             export_video(epoch+1)
 
         logging.info("Testing...")
-        test_scores, test_scores_health, test_scores_reward = eval_model()
+        test_scores, test_scores_health, test_scores_reward, actions_taken = eval_model()
+
+        print_action_stats(actions_taken)
 
         # -----------------------------------------------------------------------------
         # logging...
@@ -1424,6 +1490,7 @@ def train_agent(continue_from_save=False):
         results["test_scores"].append(test_scores)
         results["test_scores_health"].append(test_scores_health)
         results["test_scores_reward"].append(test_scores_reward)
+        results["test_actions"].append(actions_taken)
 
         elapsed_time = (time() - time_start)
 
@@ -1589,15 +1656,17 @@ def run_eval():
 
     config.rand_seed = override_rand_seed
 
-    # older files will not have this config file variable.
-    if "test_frame_repeat" not in config.__dict__.keys():
-        config.test_frame_repeat = None
-    if "use_color" not in config.__dict__.keys():
-        config.use_color = True
-    if "model" not in config.__dict__.keys():
-        config.model = "basic"
-    if "include_xy" not in config.__dict__.keys():
-        config.include_xy = False
+    # older files will not have these config variables so put defaults in here.
+    for param_name, param_default in [
+        ("dynamic_frame_repeat", False),
+        ("dfr_decision_cost", 0.0),
+        ("test_frame_repeat", None),
+        ("use_color", True),
+        ("model", "basic"),
+        ("include_xy", False)]:
+        if param_name not in config.__dict__.keys():
+            config.__dict__[param_name] = param_default
+
 
 
     config.job_name = config.job_name.strip()
@@ -1631,15 +1700,17 @@ def run_eval():
     results["test_scores_health"] = []
     results["test_scores_reward"] = []
     results["test_scores_mean"] = []
+    results["test_actions"] = []
     results["config"] = config
     results["args"] = config.args
 
-    test_scores, test_scores_health, test_scores_reward = eval_model()
+    test_scores, test_scores_health, test_scores_reward, test_actions = eval_model()
 
     results["test_scores_mean"].append(test_scores.mean())
     results["test_scores"].append(test_scores)
     results["test_scores_health"].append(test_scores_health)
     results["test_scores_reward"].append(test_scores_reward)
+    results["test_actions"].append(test_actions)
     results["best_epoch"] = best_epoch
 
     logging.critical("Scores: {}".format([round(x, 2) for x in results["test_scores_mean"]]))
@@ -1668,6 +1739,7 @@ def run_full_eval():
     results["test_scores_health"] = []
     results["test_scores_reward"] = []
     results["test_scores_mean"] = []
+    results["test_actions"] = []
     results["config"] = config
     results["args"] = config.args
 
@@ -1675,12 +1747,13 @@ def run_full_eval():
 
     for epoch in range(config.epochs):
         restore_model(epoch+1)
-        test_scores, test_scores_health, test_scores_reward = eval_model()
+        test_scores, test_scores_health, test_scores_reward, test_actions = eval_model()
 
         results["test_scores_mean"].append(test_scores.mean())
         results["test_scores"].append(test_scores)
         results["test_scores_health"].append(test_scores_health)
         results["test_scores_reward"].append(test_scores_reward)
+        results["test_actions"].append(test_actions)
 
         elapsed_time = (time() - time_start)
 
@@ -1881,7 +1954,8 @@ if __name__ == '__main__':
     parser.add_argument('--optimizer', type=str, default=get_default_argument("optimizer"), help="adam | rmsprop | rmsprop_centered")
     parser.add_argument('--include_xy', type=str2bool, default=get_default_argument("include_xy"), help="if true includes xy location as a channel.")
     parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help="path to store experiment results.")
-
+    parser.add_argument('--dynamic_frame_repeat', type=str2bool, help="Enables dynamic frame repeating. ")
+    parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
 
     args = parser.parse_args()
 
