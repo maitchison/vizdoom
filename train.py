@@ -909,6 +909,8 @@ def initialize_actions(base_skip):
 
     global actions
 
+    base_skip = safe_cast(base_skip)
+
     # Action = which buttons are pressed
     n = game.get_available_buttons_size()
 
