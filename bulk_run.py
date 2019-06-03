@@ -556,8 +556,6 @@ elif args.trial == "dfr_take_cover":
             'terminate_early':          True,
             'config_file_path': "scenarios/take_cover.cfg"
             }))
-    if args.mode == "run":
-        args.mode = "search"
 
 
 else:
