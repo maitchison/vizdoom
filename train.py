@@ -917,7 +917,7 @@ def initialize_actions(base_skip):
     if config.dynamic_frame_repeat:
         # extend actions with repeat counts
         actions = []
-        for skip in [3,7,11,19,31]:
+        for skip in [3,10,30]:
             actions += [(list(a), skip) for a in it.product([0, 1], repeat=n)]
     else:
         actions = [(list(a), base_skip) for a in it.product([0, 1], repeat=n)]
