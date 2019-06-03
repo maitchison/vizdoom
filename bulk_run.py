@@ -526,7 +526,7 @@ elif args.trial == "take_cover_2":
         args.mode = "search"
 
 elif args.trial == "dfr_take_cover":
-    for (dynamic_frame_repeat, dfr_decision_cost) in [(False, 0), (True, 0), (True, 1), (True, 10), (True, 100)]:
+    for (dynamic_frame_repeat, dfr_decision_cost) in [(False, 0), (True, 0), (True, 0.1), (True, 1), (True, 10)]:
         # pick random parameters
         jobs.append(
             ("dfr {}-{}".format(dynamic_frame_repeat, dfr_decision_cost), {

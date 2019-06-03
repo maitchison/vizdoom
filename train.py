@@ -916,14 +916,8 @@ def initialize_actions(base_skip):
 
     if config.dynamic_frame_repeat:
         # extend actions with repeat counts
-        if type(base_skip) is not int:
-            raise Exception("Dynamic frame repeat requires an integer frame_repeat.")
-        low_skip = max(int(base_skip * 0.7), 1)
-        med_skip = int(base_skip * 1.0)
-        high_skip = int(base_skip * 1.4)
-
         actions = []
-        for skip in [low_skip, med_skip, high_skip]:
+        for skip in [3,7,11,19,31]:
             actions += [(list(a), skip) for a in it.product([0, 1], repeat=n)]
     else:
         actions = [(list(a), base_skip) for a in it.product([0, 1], repeat=n)]
