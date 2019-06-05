@@ -1987,6 +1987,7 @@ if __name__ == '__main__':
     parser.add_argument('--dynamic_frame_repeat', type=str2bool, help="Enables dynamic frame repeating. ")
     parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
     parser.add_argument('--max_simultaneous_actions', type=int, help="Maximum number of buttons agent can push at a time.")
+    parser.add_argument('--cuda-device', type=int, help="id of CUDA device to use.")
 
     args = parser.parse_args()
 
@@ -2010,7 +2011,13 @@ if __name__ == '__main__':
 
     enable_logging()
 
+
     logging.info("Using device: {}".format(config.device))
+
+    if args.cuda_device is not None:
+        logging.critical(" - using cuda device {}".format(args.cuda_device))
+        torch.cuda.device(args.cuda_device)
+
 
     # apply mode
     if config.mode == "full_eval":
