@@ -467,7 +467,7 @@ elif args.trial == "take_cover":
 # Running
 # --------------------------------------------------------------------------------------------------
 
-elif args.trial == "health_gathering_supreme_2":
+elif args.trial == "search_hgs":
     for i in range(args.repeats):
         # pick random parameters
         jobs.append(
@@ -484,6 +484,7 @@ elif args.trial == "health_gathering_supreme_2":
             'end_eps':                  0,
             'weight_decay':             np.random.choice([0, 1e-6, 1e-5]),
             'optimizer':                "rmsprop",
+            'max_simultaneous_actions': 2,
             'config_file_path':         "scenarios/health_gathering_supreme.cfg",
             'frame_repeat':             np.random.choice([7, 10, 14]),
             'learning_steps_per_epoch': 5000,
@@ -496,7 +497,7 @@ elif args.trial == "health_gathering_supreme_2":
             }))
     if args.mode == "run":
         args.mode = "search"
-elif args.trial == "take_cover_2":
+elif args.trial == "search_tc":
     for i in range(args.repeats):
         # pick random parameters
         jobs.append(
@@ -522,6 +523,7 @@ elif args.trial == "take_cover_2":
             'batch_size':               32,
             'health_as_reward':         False,
             'terminate_early':          True,
+            'max_simultaneous_actions': 2,
             'config_file_path': "scenarios/take_cover.cfg"
             }))
     if args.mode == "run":
