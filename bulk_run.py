@@ -188,6 +188,7 @@ parser.add_argument('trial', type=str, help='Trial to run')
 parser.add_argument('--repeats', type=int, default=1, help='Number of times to repeat each trial.')
 parser.add_argument('--train_script', type=str, default=None, help='Script to use to train.')
 parser.add_argument('--threads', type=int, help='CPU threads for workers.')
+parser.add_argument('--device', type=str, help='CPU | CUDA.')
 parser.add_argument('--cuda_device', type=int, help='CUDA device to use.')
 parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help='Path to output experiment results to.')
 
@@ -600,6 +601,11 @@ if args.threads is not None:
 if args.cuda_device is not None:
     for job in jobs:
         job[1]["cuda_device"] = args.cuda_device
+
+# set thread limit for worker
+if args.device is not None:
+    for job in jobs:
+        job[1]["device"] = args.device
 
 
 if args.mode == "count":
