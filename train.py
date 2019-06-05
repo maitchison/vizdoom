@@ -1380,7 +1380,13 @@ def train_agent(continue_from_save=False):
 
     if config.device.lower()[:4] == "cuda":
         for model in [target_model, policy_model]:
-            model.cuda()
+            device_str = config.device.split(":")
+            if len(device_str) == 2:
+                device_id = int(device_str[1])
+            else:
+                device_id = 0
+
+            model.cuda(device_id)
 
     target_model.load_state_dict(policy_model.state_dict())
     target_model.eval()
