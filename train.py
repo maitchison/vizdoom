@@ -1378,7 +1378,7 @@ def train_agent(continue_from_save=False):
         target_model = get_net(len(actions))
         policy_model = get_net(len(actions))
 
-    if config.device.lower()[:3] == "cuda":
+    if config.device.lower()[:4] == "cuda":
         for model in [target_model, policy_model]:
             model.cuda()
 
