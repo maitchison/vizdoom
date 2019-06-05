@@ -170,6 +170,7 @@ class Config:
         self.weight_decay = 0.0
         self.include_xy = False
         self.output_path = "runs"
+        self.max_simultaneous_actions = None
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -917,10 +918,19 @@ def initialize_actions(base_skip):
     if config.dynamic_frame_repeat:
         # extend actions with repeat counts
         actions = []
-        for skip in [3,10,30]:
+
+        low_skip = max(1, base_skip // 3)
+        med_skip = base_skip
+        high_skip = base_skip*3
+
+        for skip in [low_skip, med_skip, high_skip]:
             actions += [(list(a), skip) for a in it.product([0, 1], repeat=n)]
+        # we also remove any 3 or 4 combination keys, as these are often not needed.
     else:
         actions = [(list(a), base_skip) for a in it.product([0, 1], repeat=n)]
+
+    if config.max_simultaneous_actions is not None:
+        actions = [(a, skip) for a, skip in actions if sum(a) <= config.max_simultaneous_actions]
 
 @track_time_taken
 def update_target():
@@ -1063,7 +1073,6 @@ def save_video(path, frames, frame_rate=60):
     channels, height, width = frames[0].shape
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    #fourcc = cv2.VideoWriter_fourcc(*'H264')
     out = cv2.VideoWriter(os.path.join(folder, filename), fourcc, frame_rate, (width, height))
 
     for frame in frames:
@@ -1251,6 +1260,11 @@ def export_video(epoch):
         # we generate all frames for smooth video, even though
         # actions may stick for multiple frames.
         frames.append(game.get_state().screen_buffer)
+
+        # show how long before next decision
+        frames[-1][:, 9:20, 10:10 + frame_repeat_cooldown] = 255
+        frames[-1][:, 10:19, 11:9 + frame_repeat_cooldown] = 0
+
         _ = game.make_action(best_action, 1)
         step += 1
         frame_repeat_cooldown -= 1
@@ -1260,7 +1274,7 @@ def export_video(epoch):
 
     try:
         destination_file = os.path.join(config.job_folder, "videos", "epoch-{0:03d}.mp4".format(epoch))
-        temp_file = os.path.join("temp", "{}-{:03d}.mp4".format(config.job_id,epoch))
+        temp_file = os.path.join("temp", "{}-video-{:03d}.mp4".format(config.job_id,epoch if epoch is not None else ""))
         _cached_write(temp_file, destination_file, lambda x: save_video(x, frames, frame_rate=35))
     except Exception as e:
         logging.critical("Error saving video: {}".format(e))
@@ -1551,9 +1565,28 @@ def train_agent(continue_from_save=False):
 
 def save_results(results, suffix=""):
     # save raw results to a pickle file for processing
-    pickle.dump(results, open(os.path.join(config.job_folder, "results"+suffix+".dat"), "wb"))
+
+    # make sure we are not currently saving an old file
+    while True:
+        processes = [current_processes[p.pid][0] for p in get_open_processes()]
+        waiting_on_results = False
+        for process in processes:
+            if "results" in process:
+                waiting_on_results = True
+        if not waiting_on_results:
+            break
+        logging.critical("Waiting on results file to write out.")
+        sleep(30)
+
+
+    temp_file = os.path.join("temp","results-{}.tmp".format(config.job_id))
+    destination_file = os.path.join(config.job_folder, "results"+suffix+".dat")
+
+    _cached_write(temp_file, destination_file, lambda x: pickle.dump(results, open(x, "wb")))
+
     with open(os.path.join(config.job_folder, "results"+suffix+".txt"), "w") as f:
         f.write(str(results["test_scores_mean"]))
+
     generate_graphs(results)
 
 
@@ -1658,6 +1691,7 @@ def run_eval():
         ("dfr_decision_cost", 0.0),
         ("test_frame_repeat", None),
         ("use_color", True),
+        ("max_simultaneous_actions", None),
         ("model", "basic"),
         ("include_xy", False)]:
         if param_name not in config.__dict__.keys():
@@ -1952,6 +1986,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help="path to store experiment results.")
     parser.add_argument('--dynamic_frame_repeat', type=str2bool, help="Enables dynamic frame repeating. ")
     parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
+    parser.add_argument('--max_simultaneous_actions', type=int, help="Maximum number of buttons agent can push at a time.")
 
     args = parser.parse_args()
 

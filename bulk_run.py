@@ -525,21 +525,19 @@ elif args.trial == "take_cover_2":
     if args.mode == "run":
         args.mode = "search"
 
-elif args.trial == "dfr_take_cover":
-    for (dynamic_frame_repeat, dfr_decision_cost) in [(False, 0), (True, 0), (True, 0.1), (True, 1), (True, 10)]:
+elif args.trial == "dynamic_tc":
+    for dynamic_frame_repeat in [True]:
         # pick random parameters
         jobs.append(
-            ("dfr {}-{}".format(dynamic_frame_repeat, dfr_decision_cost), {
+            ("TC {} [10]".format(dynamic_frame_repeat), {
             'dynamic_frame_repeat':     dynamic_frame_repeat,
-            'dfr_decision_cost':        dfr_decision_cost,
 
             'learning_rate':            3e-4,
             'num_stacks':               2,
             'hidden_units':             128,
-            'target_update':            400,
-            'end_eps':                  0.01,
+            'target_update':            800,
+            'end_eps':                  0.1,
             'frame_repeat':             10,
-
             'optimizer':                "rmsprop_centered",     # centered is better for this task
             'max_pool':                 False,                  # max pool has little effect, and it's faster with this off.
             'use_color':                True,
@@ -547,14 +545,45 @@ elif args.trial == "dfr_take_cover":
             'weight_decay':             0,
             'discount_factor':          1,
             'replay_memory_size':       10000,
-            'learning_steps_per_epoch': 5000,
-            'test_episodes_per_epoch':  25,
+            'learning_steps_per_epoch': 25000,
+            'test_episodes_per_epoch':  100,
             'update_every':             4,
-            'epochs':                   200,
+            'epochs':                   100,
             'batch_size':               32,
+            'max_simultaneous_actions': 2,
             'health_as_reward':         False,
             'config_file_path': "scenarios/take_cover.cfg"
             }))
+elif args.trial == "dynamic_hgs":
+    for dynamic_frame_repeat in [True]:
+        # pick random parameters
+        jobs.append(
+            ("HGS {} [10]".format(dynamic_frame_repeat), {
+            'dynamic_frame_repeat':     dynamic_frame_repeat,
+
+            'num_stacks':               4,
+            'discount_factor':          1,
+            'replay_memory_size':       10000,
+            'target_update':            200,
+            'hidden_units':             512,
+            'learning_rate':            1e-4,
+            'max_pool':                 True,
+            'use_color':                True,
+            'include_xy':               False,
+            'end_eps':                  0.1,
+            'weight_decay':             0,
+            'optimizer':                "rmsprop",
+            'config_file_path':         "scenarios/health_gathering_supreme.cfg",
+            'frame_repeat':             10,
+            'learning_steps_per_epoch': 25000,
+            'test_episodes_per_epoch':  100,
+            'update_every':             4,
+            'epochs':                   100,
+            'batch_size':               32,
+            'max_simultaneous_actions': 2,
+            'health_as_reward':         True,
+            }))
+
 
 
 else:
