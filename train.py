@@ -1987,7 +1987,7 @@ if __name__ == '__main__':
     parser.add_argument('--dynamic_frame_repeat', type=str2bool, help="Enables dynamic frame repeating. ")
     parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
     parser.add_argument('--max_simultaneous_actions', type=int, help="Maximum number of buttons agent can push at a time.")
-    parser.add_argument('--cuda-device', type=int, help="id of CUDA device to use.")
+    parser.add_argument('--cuda_device', type=int, help="id of CUDA device to use.")
 
     args = parser.parse_args()
 
