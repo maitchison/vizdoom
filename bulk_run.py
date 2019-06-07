@@ -471,26 +471,26 @@ elif args.trial == "search_hgs":
     for i in range(args.repeats):
         # pick random parameters
         jobs.append(
-            ("sample", {
-            'num_stacks':               np.random.choice([1, 2, 4]),
-            'discount_factor':          np.random.choice([1, 0.98, 0.95]),
-            'replay_memory_size':       10000,
-            'target_update':            np.random.choice([100, 200]),
+            ("sample [2]", {
+            'num_stacks':               np.random.choice([2, 4, 8]),
+            'discount_factor':          np.random.choice([0.99, 0.98, 0.95]),
+            'replay_memory_size':       np.random.choice([10000, 20000, 30000]),
+            'target_update':            np.random.choice([50, 100, 200]),
             'hidden_units':             np.random.choice([256, 512, 1024]),
-            'learning_rate':            np.random.choice([1e-4, 3e-4, 1e-5]),
+            'learning_rate':            np.random.choice([3e-4, 1e-4, 1e-5]),
             'max_pool':                 True,
             'use_color':                True,
             'include_xy':               False,
-            'end_eps':                  0,
-            'weight_decay':             np.random.choice([0, 1e-6, 1e-5]),
+            'end_eps':                  np.random.choice([0.1, 0.01, 0]),
+            'weight_decay':             np.random.choice([1e-7, 1e-6, 1e-5]),
             'optimizer':                "rmsprop",
             'max_simultaneous_actions': 2,
             'config_file_path':         "scenarios/health_gathering_supreme.cfg",
             'frame_repeat':             np.random.choice([7, 10, 14]),
-            'learning_steps_per_epoch': 5000,
-            'test_episodes_per_epoch':  25,
+            'learning_steps_per_epoch': 25000,
+            'test_episodes_per_epoch':  100,
             'update_every':             4,
-            'epochs':                   200,
+            'epochs':                   100,
             'batch_size':               32,
             'health_as_reward':         True,
             'terminate_early':          True
@@ -501,30 +501,29 @@ elif args.trial == "search_tc":
     for i in range(args.repeats):
         # pick random parameters
         jobs.append(
-            ("sample", {
-            'learning_rate':            np.random.choice([1e-4, 3e-4, 1e-3]),
-            'num_stacks':               np.random.choice([1, 2, 4]),
-            'hidden_units':             np.random.choice([64, 128, 256]),
-            'target_update':            np.random.choice([200, 400, 800]),
-            'end_eps':                  np.random.choice([0, 0.01]),
-            'frame_repeat':             10,
-
-            'optimizer':                "rmsprop_centered",     # centered is better for this task
-            'max_pool':                 False,                  # max pool has little effect, and it's faster with this off.
+            ("sample [2]", {
+            'num_stacks':               np.random.choice([2, 4, 8]),
+            'discount_factor':          np.random.choice([0.99, 0.98, 0.95]),
+            'replay_memory_size':       np.random.choice([10000, 20000, 30000]),
+            'target_update':            np.random.choice([50, 100, 200, 400, 800]),
+            'hidden_units':             np.random.choice([64, 128, 256, 512, 1024]),
+            'learning_rate':            np.random.choice([3e-4, 1e-4, 1e-5]),
+            'max_pool':                 True,
             'use_color':                True,
             'include_xy':               False,
-            'weight_decay':             0,
-            'discount_factor':          1,
-            'replay_memory_size':       10000,
-            'learning_steps_per_epoch': 5000,
-            'test_episodes_per_epoch':  25,
+            'end_eps':                  np.random.choice([0.1, 0.01, 0]),
+            'weight_decay':             np.random.choice([1e-7, 1e-6, 1e-5]),
+            'optimizer':                "rmsprop",
+            'max_simultaneous_actions': 2,
+            'config_file_path':         "scenarios/take_cover.cfg",
+            'frame_repeat':             np.random.choice([7, 10, 14]),
+            'learning_steps_per_epoch': 25000,
+            'test_episodes_per_epoch':  100,
             'update_every':             4,
-            'epochs':                   200,
+            'epochs':                   100,
             'batch_size':               32,
             'health_as_reward':         False,
-            'terminate_early':          True,
-            'max_simultaneous_actions': 2,
-            'config_file_path': "scenarios/take_cover.cfg"
+            'terminate_early':          True
             }))
     if args.mode == "run":
         args.mode = "search"
