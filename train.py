@@ -171,6 +171,7 @@ class Config:
         self.include_xy = False
         self.output_path = "runs"
         self.max_simultaneous_actions = None
+        self.weighted_random_actions = False
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -717,7 +718,7 @@ def get_target_q_values(s,d):
 def get_best_action(s,d):
 
     if config.agent_mode == "random":
-        return randint(0, len(actions) - 1)
+        return sample_random_action()
     elif config.agent_mode == "stationary":
         return 0
     elif config.agent_mode == "default":
@@ -814,6 +815,17 @@ def get_data():
         action_list_to_id(game.get_last_action())
     ])
 
+def sample_random_action():
+    """ Returns a random action sample from action space. """
+
+    if config.weighted_random_actions:
+        probs = [p for _, p in actions]
+        probs = 1 / np.float64(probs)   # sample by inverse length (ie. an action 3x longer is sampled at 1/3 rate.
+        probs /= np.sum(probs)          # normalize,
+        return np.random.choice(len(actions), p=probs)
+    else:
+        return randint(0, len(actions) - 1)
+
 
 @track_time_taken
 def perform_environment_step(step):
@@ -826,7 +838,7 @@ def perform_environment_step(step):
     eps = exploration_rate(step)
 
     if random() <= eps:
-        a = randint(0, len(actions) - 1)
+        a = sample_random_action()
     else:
         a = get_best_action(*get_stack())
 
@@ -1994,6 +2006,7 @@ if __name__ == '__main__':
     parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
     parser.add_argument('--max_simultaneous_actions', type=int, help="Maximum number of buttons agent can push at a time.")
     parser.add_argument('--cuda_device', type=int, help="id of CUDA device to use.")
+    parser.add_argument('--weighted_random_actions', type=str2bool, help="Weights random action sampling by 1/frame_repeat for each action.")
 
     args = parser.parse_args()
 

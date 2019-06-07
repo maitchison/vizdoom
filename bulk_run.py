@@ -533,9 +533,10 @@ elif args.trial == "dynamic_tc":
     for dynamic_frame_repeat in [True]:
         # pick random parameters
         jobs.append(
-            ("TC {} [10]".format(dynamic_frame_repeat), {
+            ("TC {} [10-rwa]".format(dynamic_frame_repeat), {
             'dynamic_frame_repeat':     dynamic_frame_repeat,
 
+            'weighted_random_actions':  True,
             'learning_rate':            3e-4,
             'num_stacks':               2,
             'hidden_units':             128,
@@ -562,9 +563,10 @@ elif args.trial == "dynamic_hgs":
     for dynamic_frame_repeat in [True]:
         # pick random parameters
         jobs.append(
-            ("HGS {} [10]".format(dynamic_frame_repeat), {
+            ("HGS {} [10-rwa]".format(dynamic_frame_repeat), {
             'dynamic_frame_repeat':     dynamic_frame_repeat,
 
+            'weighted_random_actions':  True,
             'num_stacks':               4,
             'discount_factor':          1,
             'replay_memory_size':       10000,
