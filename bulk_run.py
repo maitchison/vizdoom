@@ -512,7 +512,7 @@ elif args.trial == "search_tc":
             'use_color':                True,
             'include_xy':               False,
             'end_eps':                  np.random.choice([0.1, 0.01, 0]),
-            'weight_decay':             np.random.choice([1e-7, 1e-6, 1e-5]),
+            'weight_decay':             np.random.choice([0, 1e-7, 1e-6, 1e-5]),
             'optimizer':                "rmsprop",
             'max_simultaneous_actions': 2,
             'config_file_path':         "scenarios/take_cover.cfg",
