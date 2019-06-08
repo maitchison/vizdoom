@@ -507,7 +507,7 @@ elif args.trial == "search_tc":
             'replay_memory_size':       np.random.choice([10000, 20000, 30000]),
             'target_update':            np.random.choice([50, 100, 200, 400, 800]),
             'hidden_units':             np.random.choice([64, 128, 256, 512, 1024]),
-            'learning_rate':            np.random.choice([3e-4, 1e-4, 1e-5]),
+            'learning_rate':            np.random.choice([1e-3, 3e-4, 1e-4, 1e-5]),
             'max_pool':                 True,
             'use_color':                True,
             'include_xy':               False,
