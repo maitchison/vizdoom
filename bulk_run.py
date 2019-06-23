@@ -46,6 +46,7 @@ import sys
 import random
 import configparser
 import platform
+import ast
 import numpy as np
 
 
@@ -191,6 +192,7 @@ parser.add_argument('--threads', type=int, help='CPU threads for workers.')
 parser.add_argument('--device', type=str, help='CPU | CUDA.')
 parser.add_argument('--cuda_device', type=int, help='CUDA device to use.')
 parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help='Path to output experiment results to.')
+parser.add_argument('--override', type=str, help='Dict containing param:value overrides.')
 
 args = parser.parse_args()
 
@@ -462,11 +464,6 @@ elif args.trial == "take_cover":
     if args.mode == "run":
         args.mode = "search"
 
-
-# --------------------------------------------------------------------------------------------------
-# Running
-# --------------------------------------------------------------------------------------------------
-
 elif args.trial == "search_hgs":
     for i in range(args.repeats):
         # pick random parameters
@@ -590,10 +587,72 @@ elif args.trial == "dynamic_hgs":
             }))
 
 
+# --------------------------------------------------------------------------------------------------
+# Running
+# --------------------------------------------------------------------------------------------------
+
+elif args.trial in ["search_full_basic", "search_full_dc", "search_full_dm", "search_full_wh"]:
+    for i in range(args.repeats):
+
+        config_file, learning_steps, gates = {
+            "search_full_basic":
+                ("scenarios/basic.cfg",             5000,   [(20, -100), (40, -50), (60, 0)]),
+            "search_full_dc":
+                ("scenarios/deadly_corridor.cfg",   20000,  []),
+            "search_full_dm":
+                ("scenarios/deathmatch.cfg",        20000,  []),
+            "search_full_wh":
+                ("scenarios/my_way_home.cfg", 20000, [])
+        }[args.trial]
+
+        # pick random parameters
+        jobs.append(
+            ("sample", {
+            'num_stacks':               np.random.choice([1, 2, 4]),
+            'discount_factor':          np.random.choice([1, 0.99, 0.98, 0.95]),
+            'replay_memory_size':       np.random.choice([5000, 10000, 20000]),
+            'target_update':            np.random.choice([50, 100, 300, 1000, 3000, 10000]),
+            'hidden_units':             np.random.choice([64, 128, 256, 512]),
+            'learning_rate':            np.random.choice([1e-3, 3e-4, 1e-4, 3e-5, 1e-5]),
+            'max_pool':                 np.random.choice([True, False]),
+            'use_color':                np.random.choice([True, False]),
+            'include_xy':               np.random.choice([True, False]),
+            'end_eps':                  np.random.choice([0.1, 0.01, 0]),
+            'weight_decay':             np.random.choice([0, 1e-7, 1e-6, 1e-5, 1e-4]),
+            'optimizer':                np.random.choice(["adam", "rmsprop", "rmsprop_centered"]),
+            'model':                    np.random.choice(["basic", "dual"]),
+            'gradient_clip':            np.random.choice([True, False]),
+            'max_simultaneous_actions': 3,
+            'config_file_path':         config_file,
+            'frame_repeat':             np.random.choice([5, 7, 10, 14, 20]),
+            'learning_steps_per_epoch': learning_steps,
+            'test_episodes_per_epoch':  100,
+            'update_every':             4,
+            'epochs':                   100,
+            'batch_size':               32,
+            'health_as_reward':         False,
+            'include_aux_rewards':      False,
+            'gate_epoch':               [a for a,b in gates],
+            'gate_score':               [b for a,b in gates],
+            }))
+    if args.mode == "run":
+        args.mode = "search"
+
+# --------------------------------------------------------------------------------------------------
 
 else:
     print("Invalid trial name {}".format(args.trial))
     exit(-1)
+
+
+# --------------------------------------------------------------------------------------------------
+
+if args.override is not None:
+    # override parameters for experiment.
+    override_params = ast.literal_eval(args.override)
+    for k,v in override_params.items():
+        for job in jobs:
+            job[1][k] = v
 
 # set thread limit for worker
 if args.threads is not None:

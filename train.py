@@ -30,8 +30,10 @@ if __name__ == '__main__':
             os.environ["MKL_NUM_THREADS"] = thread_count
             os.environ["OPENBLAS_NUM_THREADS"] = thread_count
 
+import ast
 import argparse
-import vizdoom as vzd
+import vizdoom
+import vizdoom.vizdoom as vzd
 import itertools as it
 from random import sample, randint, random
 from time import time, sleep
@@ -69,7 +71,8 @@ MAX_GRAD = 1000     # this should be 1, the fact we have super high gradients is
                     # I should make sure input is normalised to [0,1] and change the reward shaping structure
                     # to not be so high.  Also log any extreme rewards...
 
-aux_inputs = 3      # number of auxilary inputs to model.
+AUX_INPUTS = 64     # number of auxilary inputs to model.
+MAX_BUTTONS = 32    # maximum number of button inputs
 
 preview_screen_resolution = vzd.ScreenResolution.RES_640X480
 train_screen_resolution = vzd.ScreenResolution.RES_160X120
@@ -160,7 +163,6 @@ class Config:
         self.export_video = True
         self.job_name = "job"
         self.agent_mode = "default"
-        self.terminate_early = False
         self.pytorch_version = torch.__version__
         self.python_vesion = sys.version
         self.rand_seed = None
@@ -172,6 +174,9 @@ class Config:
         self.output_path = "runs"
         self.max_simultaneous_actions = None
         self.weighted_random_actions = False
+        self.gate_epoch = None
+        self.gate_score = None
+        self.gradient_clip = False
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -350,7 +355,7 @@ class ReplayMemory:
 
     def __init__(self, capacity):
         state_shape = (capacity, config.num_channels, config.resolution[0], config.resolution[1])
-        data_shape = (capacity, aux_inputs)
+        data_shape = (capacity, AUX_INPUTS)
         self.s1 = np.zeros(state_shape, dtype=np.uint8)
         self.s2 = np.zeros(state_shape, dtype=np.uint8)
         self.d1 = np.zeros(data_shape, dtype=np.float32)
@@ -432,12 +437,8 @@ def get_net(available_actions_count):
     """ Construct network according to config setting. """
     if config.model == "basic":
         return Net(available_actions_count)
-    elif config.model == "tall":
-        return TallNet(available_actions_count)
-    elif config.model == "fat":
-        return FatNet(available_actions_count)
-    elif config.model == "deep":
-        return DeepNet(available_actions_count)
+    elif config.model == "dual":
+        return DualNet(available_actions_count)
     else:
         raise Exception("Invalid model name {}.".format(config.model))
 
@@ -467,8 +468,10 @@ class Net(nn.Module):
         )
         # maxpool and stride have slightly different final shapes.
         final_shape = [64, 7, 1]
-        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
+        self.fc1 = nn.Linear(prod(final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
+
+        self.num_actions = available_actions_count
 
     @track_time_taken
     def forward(self, x, d):
@@ -496,12 +499,13 @@ class Net(nn.Module):
         return x.cpu()
 
 
-class TallNet(nn.Module):
+class DualNet(nn.Module):
     """
-    Extends the y resolution of the basic network so that poison bottles are more easily seen.
+    Dualing DQN Net.
+    See https://www.freecodecamp.org/news/improvements-in-deep-q-learning-dueling-double-dqn-prioritized-experience-replay-and-fixed-58b130cc5682/
     """
     def __init__(self, available_actions_count):
-        super(TallNet, self).__init__()
+        super(DualNet, self).__init__()
 
         self.conv1 = nn.Conv2d(
             config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
@@ -521,9 +525,14 @@ class TallNet(nn.Module):
             stride=1
         )
         # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 7, 7]
-        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
-        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
+        final_shape = [64, 7, 1]
+        self.fc1 = nn.Linear(prod(final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
+
+
+        self.fc_v = nn.Linear(config.hidden_units, 1)
+        self.fc_a = nn.Linear(config.hidden_units, available_actions_count)
+
+        self.num_actions = available_actions_count
 
     @track_time_taken
     def forward(self, x, d):
@@ -539,131 +548,19 @@ class TallNet(nn.Module):
         x = F.relu(self.conv2(x))
         if config.max_pool:
             x = F.max_pool2d(x, 2, padding=0)
-        #x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
+        x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
         x = F.relu(self.conv3(x))
         x = F.max_pool2d(x, 2, padding=1)
         x = F.relu(self.conv4(x))
-
         x = x.view(-1, prod(x.shape[1:])) # Bx352
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
-        x = self.fc2(x)
 
-        return x.cpu()
+        a = self.fc_a(x)
+        v = self.fc_v(x).expand(x.size(0), self.num_actions)
 
+        x = v + a - a.mean(1).unsqueeze(1).expand(x.size(0), self.num_actions)
 
-class FatNet(nn.Module):
-    """
-    Extends the y resolution of the basic network and increase the number of filters signficantly.
-    """
-    def __init__(self, available_actions_count):
-        super(FatNet, self).__init__()
-
-        self.conv1 = nn.Conv2d(
-            config.num_channels * config.num_stacks, 64,    #3 color channels, 4 previous frames.
-            kernel_size=5,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv2 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv3 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-        self.conv4 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-        # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 7, 7]
-        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
-        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
-
-    @track_time_taken
-    def forward(self, x, d):
-
-        x = x.to(config.device)   # BxCx120x45
-        d = d.to(config.device)   # Bx4x3
-
-        x = x.float()/255         # convert from unit8 to float32 format
-
-        x = F.relu(self.conv1(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv2(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, 2, padding=1)
-        x = F.relu(self.conv4(x))
-
-        x = x.view(-1, prod(x.shape[1:])) # Bx352
-        x = torch.cat((x, d), 1)  # Bx355
-        x = F.leaky_relu(self.fc1(x))
-        x = self.fc2(x)
-
-        return x.cpu()
-
-
-class DeepNet(nn.Module):
-    """
-    Extends the y resolution of the basic network, increase the number of filters signficantly, and is deeper.
-    """
-    def __init__(self, available_actions_count):
-        super(DeepNet, self).__init__()
-
-        self.conv1 = nn.Conv2d(
-            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
-            kernel_size=3,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv2 = nn.Conv2d(
-            32, 64, kernel_size=3,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv3 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-        self.conv4 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-
-        self.conv5 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-
-        # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 4, 4]
-        self.fc1 = nn.Linear(prod(final_shape) + aux_inputs * config.num_stacks, config.hidden_units)
-        self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
-
-    @track_time_taken
-    def forward(self, x, d):
-
-        x = x.to(config.device)   # BxCx120x45
-        d = d.to(config.device)   # Bx4x3
-
-        x = x.float()/255         # convert from unit8 to float32 format
-
-        x = F.relu(self.conv1(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv2(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv4(x))
-        x = F.relu(self.conv5(x))
-        x = x.view(-1, prod(x.shape[1:])) # Bx352
-        x = torch.cat((x, d), 1)  # Bx355
-        x = F.leaky_relu(self.fc1(x))
-        x = self.fc2(x)
 
         return x.cpu()
 
@@ -678,21 +575,28 @@ def learn(s1, d1, target_q):
     output = policy_model(s1, d1)
     loss = criterion(output, target_q)
     loss.backward()
-    for param in policy_model.parameters(): #clamp gradients...
-        if param.grad is not None:
-            grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
-            global max_grad
-            max_grad = max(max_grad, np.max(np.abs(grads)))
-            """
-            if max_grad > MAX_GRAD:
-                logging.debug("Gradients on tensor with dims {} are very large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f})]".format(
-                    param.shape,
-                    np.min(grads), np.max(grads), np.mean(grads), np.std(grads),
-                    -MAX_GRAD, MAX_GRAD
-                ))
-                # don't actually clamp, this might be causing problems...
-                # param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
-            """
+
+
+    # for param in policy_model.parameters(): #clamp gradients...
+    #     if param.grad is not None:
+    #         grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
+    #         global max_grad
+    #         max_grad = max(max_grad, np.max(np.abs(grads)))
+    #         """
+    #         if max_grad > MAX_GRAD:
+    #             logging.debug("Gradients on tensor with dims {} are very large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f})]".format(
+    #                 param.shape,
+    #                 np.min(grads), np.max(grads), np.mean(grads), np.std(grads),
+    #                 -MAX_GRAD, MAX_GRAD
+    #             ))
+    #             # don't actually clamp, this might be causing problems...
+    #             # param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
+    #         """
+
+    if config.gradient_clip:
+        for param in policy_model.parameters():
+            param.grad.data.clamp_(-1, 1)
+
     optimizer.step()
     return loss
 
@@ -809,11 +713,23 @@ def get_observation():
 
 
 def get_data():
-    return np.float32([
-        game.get_game_variable(vzd.GameVariable.HEALTH),
-        game.get_episode_time(),
-        action_list_to_id(game.get_last_action())
-    ])
+
+    number_of_actions = len(game.get_last_action())
+    max_game_varaibles = AUX_INPUTS - number_of_actions
+
+    game_variables = [game.get_episode_time()] + [game.get_game_variable(x) for x in game.get_available_game_variables()]
+
+    if len(game_variables) > max_game_varaibles:
+        raise Exception("Too many game variables for model, found {} but only room for {}".format(len(game_variables), max_game_varaibles))
+
+    # pad game variables with 0s.
+    while len(game_variables) < max_game_varaibles:
+        game_variables += [0.0]
+
+    # add the last action as a bit vector
+    game_variables += game.get_last_action()
+
+    return np.float32(game_variables)
 
 def sample_random_action():
     """ Returns a random action sample from action space. """
@@ -913,12 +829,12 @@ def initialize_vizdoom():
         game_hq.set_screen_resolution(preview_screen_resolution)
         game_hq.init()
 
-    initialize_actions(config.frame_repeat)
+    initialize_actions(config.frame_repeat, verbose=True)
 
     logging.info("Doom initialized.")
 
 
-def initialize_actions(base_skip):
+def initialize_actions(base_skip, verbose=False):
 
     global actions
 
@@ -937,12 +853,16 @@ def initialize_actions(base_skip):
 
         for skip in [low_skip, med_skip, high_skip]:
             actions += [(list(a), skip) for a in it.product([0, 1], repeat=n)]
-        # we also remove any 3 or 4 combination keys, as these are often not needed.
     else:
         actions = [(list(a), base_skip) for a in it.product([0, 1], repeat=n)]
 
     if config.max_simultaneous_actions is not None:
+        original_action_count = len(actions)
         actions = [(a, skip) for a, skip in actions if sum(a) <= config.max_simultaneous_actions]
+        if verbose:
+            logging.critical("Using {}/{} action combinations (with max actions: {} from {} buttons)".format(
+                len(actions), original_action_count, config.max_simultaneous_actions, n
+            ))
 
 @track_time_taken
 def update_target():
@@ -972,6 +892,9 @@ def handle_keypress():
             print()
             logging.critical("***** ID {} - {} [{}]".format(config.experiment, config.job_name, config.job_id))
             logging.critical("Outputting results to {}".format(config.job_folder))
+        elif c == "a":
+            print("Actions stats not implemented yet.")
+            #print_action_stats(actions_taken)
         elif c == "h":
             print()
             logging.critical("**** H for help")
@@ -1011,12 +934,16 @@ def get_final_score(health_as_reward=None):
     if health_as_reward is None:
         health_as_reward = config.health_as_reward
     if health_as_reward:
-        # use integral of health over time assuming agent would have lasted 2100 steps.
+        # use integral of health over time assuming agent would have lasted the full steps.
 
-        # note, we assume each health history entry has same length, which they should be on expectation.
-        final_health, current_tick, _ = data_history[-1]
+        current_tick = data_history[0]
 
-        final_score = np.mean(health_history) * (current_tick / 2100)
+        game_duration = game.get_episode_timeout()
+        if game_duration == 0:
+            # default to 2100 (60 seconds) if game has no max duration.
+            game_duration = 2100
+
+        final_score = np.mean(health_history) * (current_tick / game_duration)
 
     else:
         final_score = game.get_total_reward()
@@ -1119,9 +1046,14 @@ def _cached_write(temp_file, destination_file, f):
     """ Executes function f, creating temp_filename then moves results to destination as a background process
         This helps performance when destination path is a networked drive.
     """
-    f(temp_file)
-    p = subprocess.Popen(["mv", temp_file, destination_file])
-    current_processes[p.pid] = (temp_file, p)
+
+    # not supported on windows yet...
+    if os.name == "nt":
+        f(destination_file)
+    else:
+        f(temp_file)
+        p = subprocess.Popen(["mv", temp_file, destination_file])
+        current_processes[p.pid] = (temp_file, p)
 
 
 def get_stack():
@@ -1411,7 +1343,8 @@ def train_agent(continue_from_save=False):
 
     time_start = time()
 
-    current_gate = -1
+    passed_gates = set()
+    failed_gate = False
 
     for epoch in range(start_epoch, config.epochs):
 
@@ -1481,8 +1414,6 @@ def train_agent(continue_from_save=False):
         logging.info("Testing...")
         test_scores, test_scores_health, test_scores_reward, actions_taken = eval_model()
 
-        print_action_stats(actions_taken)
-
         # -----------------------------------------------------------------------------
         # logging...
         # -----------------------------------------------------------------------------
@@ -1538,23 +1469,25 @@ def train_agent(continue_from_save=False):
         save_results(results,"_partial")
         save_model(epoch+1)
 
-        gate = (epoch * config.learning_steps_per_epoch) // (250 * 1000)
-        if args.terminate_early and gate > current_gate:
-            current_gate = gate
-            avg_score = np.mean(np.mean(results["test_scores_reward"], axis=1)[-5:])
-            required_score = [-1, 600, 800, 1000, -1][min(gate,4)]
-            if "take_cover" in config.scenario:
-                #this one is a bit harder.
-                required_score /= 2
-            if avg_score < required_score:
-                logging.critical(
-                    "Agent has not performed well enough to continue.  Reward at {}k is {:.1f} but needed to be {:.0f}".format(
-                        epoch * config.learning_steps_per_epoch / 1000, avg_score, required_score))
-                break
-            else:
-                logging.critical(
-                    "Agent passed gate at {}k with {:.1f} / {:.0f}".format(
-                        epoch * config.learning_steps_per_epoch / 1000, avg_score, required_score))
+        if args.gate_epoch is not None and args.gate_score is not None:
+            for req_gate, req_score in zip(config.gate_epoch, config.gate_score):
+                if req_gate not in passed_gates and epoch >= req_gate:
+                    avg_score = np.mean(np.mean(results["test_scores_reward"], axis=1)[-3:])
+                    if avg_score < req_score:
+                        logging.critical(
+                            "Agent has not performed well enough to continue.  Reward at epoch {} is {:.1f} but needed to be {:.0f}".format(
+                                epoch , avg_score, req_score))
+                        failed_gate = True
+                        break
+                    else:
+                        logging.critical(
+                            "Agent passed gate at epoch {} with {:.1f} / {:.0f}".format(
+                                epoch, avg_score, req_score))
+                        passed_gates.add(req_gate)
+
+        if failed_gate:
+            break
+
 
     save_results(results, "_complete")
     save_model()
@@ -1934,6 +1867,12 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def str2array(v):
+    try:
+        return [int(x) for x in ast.literal_eval(v)]
+    except:
+        raise argparse.ArgumentTypeError('Array of integers expected.')
+
 
 def get_default_argument(argument):
 
@@ -1997,16 +1936,19 @@ if __name__ == '__main__':
     parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
     parser.add_argument('--threads', type=int, help="Number of threads to use during training")
     parser.add_argument('--eval_results_suffix', type=str, default="", help="Filename suffix for evaluation results.")
-    parser.add_argument('--model', type=str, default="basic", help="Name of model to use basic | tall | fat | deep")
+    parser.add_argument('--model', type=str, default="basic", help="Name of model to use basic | dual")
     parser.add_argument('--weight_decay', type=float, default=0.0, help="weight decay for optimizer")
     parser.add_argument('--optimizer', type=str, default=get_default_argument("optimizer"), help="adam | rmsprop | rmsprop_centered")
     parser.add_argument('--include_xy', type=str2bool, default=get_default_argument("include_xy"), help="if true includes xy location as a channel.")
     parser.add_argument('--output_path', type=str, default=get_default_argument("output_path"), help="path to store experiment results.")
     parser.add_argument('--dynamic_frame_repeat', type=str2bool, help="Enables dynamic frame repeating. ")
     parser.add_argument('--dfr_decision_cost', type=float, default=0.0, help="Cost per decision for dynamic frame repeat. Encourages taking larger frame skips.")
-    parser.add_argument('--max_simultaneous_actions', type=int, help="Maximum number of buttons agent can push at a time.")
+    parser.add_argument('--max_simultaneous_actions', type=int, default=4, help="Maximum number of buttons agent can push at a time.")
     parser.add_argument('--cuda_device', type=int, help="id of CUDA device to use.")
     parser.add_argument('--weighted_random_actions', type=str2bool, help="Weights random action sampling by 1/frame_repeat for each action.")
+    parser.add_argument('--gate_epoch', type=str2array, help="list of epochs to test score at.")
+    parser.add_argument('--gate_score', type=str2array, help="list of minimum score at corresponding epoch to pass gate.")
+    parser.add_argument('--gradient_clip', type=str2bool, default=False, help="enable gradient clipping.")
 
     args = parser.parse_args()
 
