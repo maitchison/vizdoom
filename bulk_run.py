@@ -638,6 +638,48 @@ elif args.trial in ["search_full_basic", "search_full_dc", "search_full_dm", "se
     if args.mode == "run":
         args.mode = "search"
 
+elif args.trial in ["search_A_wh"]:
+    for i in range(args.repeats):
+
+        config_file, learning_steps, gates = {
+            "search_A_wh":
+                ("scenarios/my_way_home.cfg",       20000, [])
+        }[args.trial]
+
+        # pick random parameters
+        jobs.append(
+            ("sample", {
+            'num_stacks':               np.random.choice([1, 2, 4]),
+            'discount_factor':          np.random.choice([0.99, 0.98, 0.95]),
+            'replay_memory_size':       np.random.choice([10000, 20000, 40000]),
+            'target_update':            np.random.choice([150, 300, 600]),
+            'hidden_units':             np.random.choice([256, 512, 1024]),
+            'learning_rate':            np.random.choice([1e-4, 3e-5, 1e-5]),
+            'max_pool':                 np.random.choice([False]),
+            'use_color':                np.random.choice([True]),
+            'include_xy':               np.random.choice([False]),
+            'end_eps':                  np.random.choice([0.03, 0.01, 0.003]),
+            'weight_decay':             np.random.choice([0, 1e-7, 1e-6, 1e-5, 1e-4]),
+            'optimizer':                np.random.choice(["adam", "rmsprop", "rmsprop_centered"]),
+            'model':                    np.random.choice(["basic", "dual"]),
+            'gradient_clip':            np.random.choice([True, False]),
+            'max_simultaneous_actions': 3,
+            'config_file_path':         config_file,
+            'frame_repeat':             np.random.choice([12, 14, 16]),
+            'learning_steps_per_epoch': learning_steps,
+            'test_episodes_per_epoch':  100,
+            'update_every':             4,
+            'epochs':                   100,
+            'batch_size':               32,
+            'health_as_reward':         False,
+            'include_aux_rewards':      False,
+            'gate_epoch':               [a for a,b in gates],
+            'gate_score':               [b for a,b in gates],
+            }))
+    if args.mode == "run":
+        args.mode = "search"
+
+
 # --------------------------------------------------------------------------------------------------
 
 else:
