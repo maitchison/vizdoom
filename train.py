@@ -936,9 +936,10 @@ def get_final_score(health_as_reward=None):
     if health_as_reward:
         # use integral of health over time assuming agent would have lasted the full steps.
 
-        current_tick = data_history[0]
+        current_tick = data_history[-1][0]
 
         game_duration = game.get_episode_timeout()
+
         if game_duration == 0:
             # default to 2100 (60 seconds) if game has no max duration.
             game_duration = 2100
@@ -1379,7 +1380,7 @@ def train_agent(continue_from_save=False):
 
             perform_environment_step(step)
 
-            if step >= config.first_update_step:
+            if step >= int(config.first_update_step * config.update_every):
                 if config.update_every < 1:
                     for i in range(int(1 / config.update_every)):
                         perform_learning_step()
@@ -1867,11 +1868,17 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
-def str2array(v):
+def str_to_int_array(v):
     try:
         return [int(x) for x in ast.literal_eval(v)]
     except:
         raise argparse.ArgumentTypeError('Array of integers expected.')
+
+def str_to_float_array(v):
+    try:
+        return [float(x) for x in ast.literal_eval(v)]
+    except:
+        raise argparse.ArgumentTypeError('Array of floats expected.')
 
 
 def get_default_argument(argument):
@@ -1946,8 +1953,8 @@ if __name__ == '__main__':
     parser.add_argument('--max_simultaneous_actions', type=int, default=4, help="Maximum number of buttons agent can push at a time.")
     parser.add_argument('--cuda_device', type=int, help="id of CUDA device to use.")
     parser.add_argument('--weighted_random_actions', type=str2bool, help="Weights random action sampling by 1/frame_repeat for each action.")
-    parser.add_argument('--gate_epoch', type=str2array, help="list of epochs to test score at.")
-    parser.add_argument('--gate_score', type=str2array, help="list of minimum score at corresponding epoch to pass gate.")
+    parser.add_argument('--gate_epoch', type=str_to_int_array, help="list of epochs to test score at.")
+    parser.add_argument('--gate_score', type=str_to_float_array, help="list of minimum score at corresponding epoch to pass gate.")
     parser.add_argument('--gradient_clip', type=str2bool, default=False, help="enable gradient clipping.")
 
     args = parser.parse_args()

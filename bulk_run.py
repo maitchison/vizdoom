@@ -591,6 +591,50 @@ elif args.trial == "dynamic_hgs":
 # Running
 # --------------------------------------------------------------------------------------------------
 
+elif args.trial == "hgs_walltime":
+    for update_every in [1, 2, 1/2, 4, 1/4, 8, 1/8]:
+        for k in [round(x,6) for x in np.linspace(2, -2, 11)]:
+
+            # env step takes 0.5ms
+            # update takes 9ms
+            # assume with ratio 1 we want 10k updates
+
+            env_cost = 1
+            update_cost = 9
+            units = 10000 * (env_cost + update_cost)
+
+            learning_steps = int(units / (env_cost + (update_cost / update_every)))
+
+            learning_rate = 5e-5 * update_every * 2**k
+
+            # pick random parameters
+            jobs.append(
+                ("hgs_walltime update_every={} k={} ls={}".format(update_every, k, learning_steps), {
+                'num_stacks':               4,
+                'discount_factor':          0.95,
+                'replay_memory_size':       20000,
+                'target_update':            100,
+                'hidden_units':             256,
+                'learning_rate':            learning_rate,
+                'max_pool':                 False,
+                'use_color':                True,
+                'include_xy':               False,
+                'end_eps':                  0.01,
+                'weight_decay':             0,
+                'optimizer':                "rmsprop",
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'frame_repeat':             10,
+                'learning_steps_per_epoch': learning_steps,
+                'test_episodes_per_epoch':  100,
+                'update_every':             update_every,
+                'epochs':                   100,
+                'batch_size':               32,
+                'health_as_reward':         True,
+                'include_aux_rewards':      False,      # change in health should be enough.
+                'terminate_early':          False
+                }))
+
+
 elif args.trial in ["search_full_basic", "search_full_dc", "search_full_dm", "search_full_wh"]:
     for i in range(args.repeats):
 
@@ -611,7 +655,7 @@ elif args.trial in ["search_full_basic", "search_full_dc", "search_full_dm", "se
             'num_stacks':               np.random.choice([1, 2, 4]),
             'discount_factor':          np.random.choice([1, 0.99, 0.98, 0.95]),
             'replay_memory_size':       np.random.choice([5000, 10000, 20000]),
-            'target_update':            np.random.choice([50, 100, 300, 1000, 3000, 10000]),
+            'target_update':            np.random.choice([50, 100, 300, 1000, 3000, 10000, 30000]),
             'hidden_units':             np.random.choice([64, 128, 256, 512]),
             'learning_rate':            np.random.choice([1e-3, 3e-4, 1e-4, 3e-5, 1e-5]),
             'max_pool':                 np.random.choice([True, False]),
@@ -643,7 +687,7 @@ elif args.trial in ["search_A_wh"]:
 
         config_file, learning_steps, gates = {
             "search_A_wh":
-                ("scenarios/my_way_home.cfg",       20000, [])
+                ("scenarios/my_way_home.cfg",       20000, [(25, -0.15)])
         }[args.trial]
 
         # pick random parameters
