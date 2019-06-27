@@ -591,6 +591,38 @@ elif args.trial == "dynamic_hgs":
 # Running
 # --------------------------------------------------------------------------------------------------
 
+elif args.trial == "whm_novelty":
+    for prediction in [1]:
+        for novelty in [1]:
+            # pick random parameters
+            jobs.append(
+                ("whm novelty={}".format(novelty), {
+                'num_stacks':               4,
+                'discount_factor':          0.95,
+                'replay_memory_size':       10000,
+                'target_update':            300,
+                'hidden_units':             256,
+                'learning_rate':            3e-5,
+                'max_pool':                 False,
+                'use_color':                True,
+                'include_xy':               False,
+                'end_eps':                  0.01,
+                'weight_decay':             0,
+                'optimizer':                "rmsprop",
+                'max_simultaneous_actions': 2,
+                'config_file_path': "scenarios/my_way_home.cfg",
+                'frame_repeat':             10,
+                'learning_steps_per_epoch': 10000,
+                'test_episodes_per_epoch':  100,
+                'update_every':             4,
+                'epochs':                   100,
+                'batch_size':               32,
+                'health_as_reward':         False,
+                'include_aux_rewards':      False,      # change in health should be enough.
+                'terminate_early':          False,
+                'novelty':                  novelty
+                }))
+
 elif args.trial == "hgs_walltime_rs":
     for update_every in [1, 2, 1/2, 4, 1/4]:
         for sample in range(32):
@@ -634,7 +666,7 @@ elif args.trial == "hgs_walltime_rs":
 
 
 elif args.trial == "hgs_walltime":
-    for update_every in [1, 2, 1/2, 4, 1/4, 8, 1/8]:
+    for update_every in [1, 2, 1/2, 4, 1/4, 6, 1/6, 8, 1/8]:
         for k in [round(x,6) for x in np.linspace(2, -2, 11)] :
 
             # env step takes 0.5ms

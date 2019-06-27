@@ -177,6 +177,7 @@ class Config:
         self.gate_epoch = None
         self.gate_score = None
         self.gradient_clip = False
+        self.novelty = 0.0
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -254,9 +255,19 @@ class Config:
 
     def make_job_folder(self):
         """create the job folder"""
-        os.makedirs(self.job_folder, exist_ok=True)
-        os.makedirs(os.path.join(self.job_folder, "models"), exist_ok=True)
-        os.makedirs(os.path.join(self.job_folder, "videos"), exist_ok=True)
+
+        # on a networked folder this sometimes errors so we try a couple of times.
+        error = None
+        for _ in range(3):
+            try:
+                os.makedirs(self.job_folder, exist_ok=True)
+                os.makedirs(os.path.join(self.job_folder, "models"), exist_ok=True)
+                os.makedirs(os.path.join(self.job_folder, "videos"), exist_ok=True)
+                return
+            except e:
+                error = e
+
+        raise e
 
     def rename_job_folder(self):
         """ moves job to completed folder. """
@@ -350,14 +361,88 @@ def preprocess(img):
 
     return img
 
+class NoveltyMemory:
+
+    def __init__(self, capacity):
+        self.s = np.zeros((capacity, config.hidden_units))
+        self.pos = 0
+        self.size = 0
+        self.mu = 0
+        self.sigma = 1
+        self.counter = 0
+
+    @track_time_taken
+    def check_normalization_constants(self):
+        # calculate distance for many samples.
+        print(": novelty constants (current) mean:{:.3f} std:{:.3f}".format(self.mu, self.sigma))
+        sample_count = 100
+        sample = [self.get_distance(self.s[x], ignore_closest=True) for x in np.random.choice(range(self.size), size=sample_count)]
+        print(": novelty constants (sample) mean:{:.3f} std:{:.3f}".format(np.mean(sample), np.std(sample)))
+
+    @track_time_taken
+    def add_novelty_sample(self, sample):
+
+        self.s[self.pos] = sample
+        self.pos = (self.pos + 1) % len(self.s)
+        self.size = min(self.size + 1, len(self.s))
+        self.counter += 1
+
+        # update our normalization constants a bit...
+        if self.counter % 4 == 0:
+            sample_count = 4
+            sample = [self.get_distance(self.s[x], ignore_closest=True) for x in np.random.choice(range(self.size), size=sample_count)]
+
+            alpha = 0.99
+            self.mu = alpha * self.mu + (1-alpha) * np.mean(sample)
+            self.sigma = alpha * self.sigma + (1 - alpha) * np.std(sample, ddof=1) # this is a sample not the population...
+
+        # every now and them make constants more accurate, probably not needed though?
+        if self.counter % 5000 == 0:
+            self.check_normalization_constants()
+
+    def get_distance(self, sample, ignore_closest=False):
+        """ returns distance between this example and all examples in cache.
+            ignore_closest: closets match will be disgarded which is helpful for testing distance of a cached sample
+                without including itself.
+        """
+
+        sample = np.asarray(sample)
+
+        # these slots are not yet filled... so filter them out
+        others = self.s if self.size == len(self.s) else self.s[:self.size]
+
+        # L2 seems to work the best in my other experiments on density estimation
+        distances = np.linalg.norm(sample - others, ord=2, axis=1)
+
+        distances = sorted(distances)
+        if ignore_closest:
+            top_5 = distances[1:6]
+        else:
+            top_5 = distances[:5]
+
+        if len(top_5) == 0:
+            return 0
+        else:
+            return np.mean(top_5)
+
+
+    def get_novelty(self, sample):
+        """ returns novelty [-1..1] of given sample where sample is the current hidden state.
+            a score of 1.0 indicates highly novel, where as a score of 0 or less indicates typical.
+        """
+        distance = self.get_distance(sample)
+        return np.tanh((distance - self.mu) / self.sigma)
 
 class ReplayMemory:
 
     def __init__(self, capacity):
         state_shape = (capacity, config.num_channels, config.resolution[0], config.resolution[1])
+        novel_shape = (capacity,)
         data_shape = (capacity, AUX_INPUTS)
         self.s1 = np.zeros(state_shape, dtype=np.uint8)
         self.s2 = np.zeros(state_shape, dtype=np.uint8)
+
+        self.nov = np.zeros(novel_shape, dtype=np.float32)
         self.d1 = np.zeros(data_shape, dtype=np.float32)
         self.d2 = np.zeros(data_shape, dtype=np.float32)
         self.a = np.zeros(capacity, dtype=np.int32)
@@ -473,13 +558,11 @@ class Net(nn.Module):
 
         self.num_actions = available_actions_count
 
-    @track_time_taken
-    def forward(self, x, d):
+    def hidden(self, x, d):
+        x = x.to(config.device)  # BxCx120x45
+        d = d.to(config.device)  # Bx4x3
 
-        x = x.to(config.device)   # BxCx120x45
-        d = d.to(config.device)   # Bx4x3
-
-        x = x.float()/255         # convert from unit8 to float32 format
+        x = x.float() / 255  # convert from unit8 to float32 format
 
         x = F.relu(self.conv1(x))
         if config.max_pool:
@@ -487,13 +570,19 @@ class Net(nn.Module):
         x = F.relu(self.conv2(x))
         if config.max_pool:
             x = F.max_pool2d(x, 2, padding=0)
-        x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
+        x = F.max_pool2d(x, kernel_size=[1, 3], padding=0)
         x = F.relu(self.conv3(x))
         x = F.max_pool2d(x, 2, padding=1)
         x = F.relu(self.conv4(x))
-        x = x.view(-1, prod(x.shape[1:])) # Bx352
+        x = x.view(-1, prod(x.shape[1:]))  # Bx352
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
+        return x
+
+    @track_time_taken
+    def forward(self, x, d):
+
+        x = self.hidden(x, d)
         x = self.fc2(x)
 
         return x.cpu()
@@ -619,8 +708,13 @@ def get_target_q_values(s,d):
     return q
 
 
-def get_best_action(s,d):
+def get_hidden(s, d):
+    s = Variable(torch.from_numpy(s))
+    d = Variable(torch.from_numpy(d))
+    h = target_model.hidden(s, d).cpu()
+    return h
 
+def get_best_action(s,d):
     if config.agent_mode == "random":
         return sample_random_action()
     elif config.agent_mode == "stationary":
@@ -652,6 +746,7 @@ def perform_learning_step():
         q = get_q_values(s2, d2).data.numpy()
         q2 = np.max(q, axis=1)
         target_q = get_target_q_values(s1, d1).data.numpy() if config.target_update > 0 else get_q_values(s1, d1).data.numpy()
+
         # target differs from q only for the selected action. The following means:
         # target_Q(s,a) = r + gamma * max Q(s2,_) if isterminal else r
 
@@ -790,6 +885,21 @@ def perform_environment_step(step):
     else:
         push_state(get_observation(), get_data())
         s2, d2 = get_obs()
+
+    # calculate the novelty - note we do this here, not once in the memory.
+    if config.novelty != 0:
+        h = get_hidden(*get_stack()).detach()[0]
+        nov = feature_cache.get_novelty(h)
+
+        # there are a few ideas here,
+        # we can't store 10k samples so just take 10% or them
+        # maybe novel states should be weighted more highly? not sure?
+
+        if randint(0, 9) == 0:
+            feature_cache.add_novelty_sample(h)
+
+        novelty_reward = config.novelty * nov
+        reward += novelty_reward
 
     memory.add_transition(s1, d1, a, s2, d2, isterminal, reward)
 
@@ -1275,12 +1385,14 @@ def train_agent(continue_from_save=False):
 
     global actions
     global memory
+    global feature_cache
 
     # setup doom
     initialize_vizdoom()
 
     # Create replay memory which will store the transitions
     memory = ReplayMemory(capacity=config.replay_memory_size)
+    feature_cache = NoveltyMemory(capacity=config.replay_memory_size//10)
 
     # create a file showing the run parameters
     with open(os.path.join(config.job_folder, "config.txt"), "w") as f:
@@ -1956,6 +2068,7 @@ if __name__ == '__main__':
     parser.add_argument('--gate_epoch', type=str_to_int_array, help="list of epochs to test score at.")
     parser.add_argument('--gate_score', type=str_to_float_array, help="list of minimum score at corresponding epoch to pass gate.")
     parser.add_argument('--gradient_clip', type=str2bool, default=False, help="enable gradient clipping.")
+    parser.add_argument('--novelty', type=float, default=0.0, help="novelty reward, 0 to disable.")
 
     args = parser.parse_args()
 
