@@ -591,7 +591,7 @@ elif args.trial == "dynamic_hgs":
 # Running
 # --------------------------------------------------------------------------------------------------
 
-elif args.trial == "wh_novelty_id":
+elif args.trial == "wh_explore":
     for id_factor in [100, 10, 1, 0]:
         for novelty in [10, 1, 0]:
             jobs.append(
