@@ -591,12 +591,11 @@ elif args.trial == "dynamic_hgs":
 # Running
 # --------------------------------------------------------------------------------------------------
 
-elif args.trial == "whm_novelty":
-    for prediction in [1]:
-        for novelty in [1]:
-            # pick random parameters
+elif args.trial == "wh_novelty_id":
+    for id_factor in [100, 10, 1, 0]:
+        for novelty in [10, 1, 0]:
             jobs.append(
-                ("whm novelty={}".format(novelty), {
+                ("wh novelty={} id_factor={}".format(novelty, id_factor), {
                 'num_stacks':               4,
                 'discount_factor':          0.95,
                 'replay_memory_size':       10000,
@@ -620,8 +619,44 @@ elif args.trial == "whm_novelty":
                 'health_as_reward':         False,
                 'include_aux_rewards':      False,      # change in health should be enough.
                 'terminate_early':          False,
-                'novelty':                  novelty
+                'novelty':                  novelty,
+                'id_factor':                id_factor,
                 }))
+
+
+elif args.trial == "hgs_novelty":
+    for id_factor in [100, 10, 1, 0]:
+        for novelty in [10, 1, 0]:
+
+            # pick random parameters
+            jobs.append(
+                ("hgs novelty={} id_factor={}".format(novelty, id_factor), {
+                'num_stacks':               4,
+                'discount_factor':          0.95,
+                'replay_memory_size':       20000,
+                'target_update':            100,
+                'hidden_units':             256,
+                'learning_rate':            3e-5,
+                'max_pool':                 False,
+                'use_color':                True,
+                'include_xy':               False,
+                'end_eps':                  0.01,
+                'weight_decay':             0,
+                'optimizer':                "rmsprop",
+                'config_file_path': "scenarios/health_gathering_supreme.cfg",
+                'frame_repeat':             10,
+                'learning_steps_per_epoch': 10000,
+                'test_episodes_per_epoch':  100,
+                'update_every':             4,
+                'epochs':                   100,
+                'batch_size':               32,
+                'health_as_reward':         True,
+                'include_aux_rewards':      False,      # change in health should be enough.
+                'terminate_early':          False,
+                'novelty': novelty,
+                'id_factor': id_factor,
+                }))
+
 
 elif args.trial == "hgs_walltime_rs":
     for update_every in [1, 2, 1/2, 4, 1/4]:

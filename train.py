@@ -176,8 +176,9 @@ class Config:
         self.weighted_random_actions = False
         self.gate_epoch = None
         self.gate_score = None
-        self.gradient_clip = False
+        self.gradient_clip = 0
         self.novelty = 0.0
+        self.id_factor = 0.0
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -556,6 +557,8 @@ class Net(nn.Module):
         self.fc1 = nn.Linear(prod(final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
+        self.pa = nn.Linear(config.hidden_units*2, available_actions_count)
+
         self.num_actions = available_actions_count
 
     def hidden(self, x, d):
@@ -578,6 +581,13 @@ class Net(nn.Module):
         x = torch.cat((x, d), 1)  # Bx355
         x = F.leaky_relu(self.fc1(x))
         return x
+
+    def predict_action(self, s1, d1, s2, d2):
+        h1 = self.hidden(s1, d1)
+        h2 = self.hidden(s2, d2)
+        pred = torch.sigmoid(self.pa(torch.cat((h1,h2), 1)))
+        return pred.cpu()
+
 
     @track_time_taken
     def forward(self, x, d):
@@ -654,7 +664,7 @@ class DualNet(nn.Module):
         return x.cpu()
 
 
-def learn(s1, d1, target_q):
+def learn(s1, d1, s2, d2, a, target_q):
     s1 = torch.from_numpy(s1)
     d1 = torch.from_numpy(d1)
     target_q = torch.from_numpy(target_q)
@@ -663,28 +673,24 @@ def learn(s1, d1, target_q):
     optimizer.zero_grad()
     output = policy_model(s1, d1)
     loss = criterion(output, target_q)
+
+    if config.id_factor != 0 and s2 is not None:
+        s2 = Variable(torch.from_numpy(s2))
+        d2 = torch.from_numpy(d2)
+        one_hot_actions = torch.from_numpy(np.float32([action_id_to_list(x) for x in a]))
+        pred = policy_model.predict_action(s1, d1*0, s2, d2*0) # data has action information in it...
+
+        id_loss = config.id_factor * criterion(pred, one_hot_actions)
+
+        #print("loss was:  {} added is: {}".format(loss, id_loss))
+
+        loss += id_loss
+
     loss.backward()
 
-
-    # for param in policy_model.parameters(): #clamp gradients...
-    #     if param.grad is not None:
-    #         grads = param.grad.data.cpu().numpy() # note: could keep this all on GPU if I wanted until we need to clamp..
-    #         global max_grad
-    #         max_grad = max(max_grad, np.max(np.abs(grads)))
-    #         """
-    #         if max_grad > MAX_GRAD:
-    #             logging.debug("Gradients on tensor with dims {} are very large (min:{:.1f} max:{:.1f} mean:{:.1f} std:{:.1f})]".format(
-    #                 param.shape,
-    #                 np.min(grads), np.max(grads), np.mean(grads), np.std(grads),
-    #                 -MAX_GRAD, MAX_GRAD
-    #             ))
-    #             # don't actually clamp, this might be causing problems...
-    #             # param.grad.data.clamp_(-MAX_GRAD, MAX_GRAD)
-    #         """
-
-    if config.gradient_clip:
+    if config.gradient_clip != 0:
         for param in policy_model.parameters():
-            param.grad.data.clamp_(-1, 1)
+            param.grad.data.clamp_(-config.gradient_clip, config.gradient_clip)
 
     optimizer.step()
     return loss
@@ -752,7 +758,7 @@ def perform_learning_step():
 
         target_q[np.arange(target_q.shape[0]), a] = r + config.discount_factor * (1 - isterminal) * q2
 
-        this_loss = learn(s1, d1, target_q)
+        this_loss = learn(s1, d1, s2, d2, a, target_q)
         global prev_loss
         prev_loss = 0.95 * prev_loss + 0.05 * float(this_loss)
 
@@ -802,6 +808,8 @@ def action_list_to_id(action_list):
         mul *= 2
     return result
 
+def action_id_to_list(action_id):
+    return [int(x) for x in bin(action_id)[2:].zfill(len(actions))]
 
 def get_observation():
     return preprocess(game.get_state().screen_buffer)
@@ -1233,6 +1241,7 @@ def eval_model(generate_video=False):
     actions_taken = []
     test_scores_health = []
     test_scores_reward = []
+    test_scores_exploration = []
 
     if config.test_frame_repeat is not None:
         initialize_actions(config.test_frame_repeat)
@@ -1243,6 +1252,8 @@ def eval_model(generate_video=False):
 
         reset_agent(test_episode)
         step = 0
+
+        cells_explored = set()
 
         frames = []
         actions_this_episode = []
@@ -1261,6 +1272,15 @@ def eval_model(generate_video=False):
 
             reward = env_step(*actions[best_action_index])
 
+            x,y,z = \
+                game.get_game_variable(vzd.GameVariable.POSITION_X), \
+                game.get_game_variable(vzd.GameVariable.POSITION_Y), \
+                game.get_game_variable(vzd.GameVariable.POSITION_Z)  \
+
+            # break map into 4x4 cells
+            CELL_SIZE = 4
+            cells_explored.add((int(x/CELL_SIZE), int(y/CELL_SIZE), int(z/CELL_SIZE)))
+
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
 
             if not game.is_episode_finished():
@@ -1277,11 +1297,12 @@ def eval_model(generate_video=False):
         actions_taken.append(actions_this_episode[:])
         test_scores_health.append(get_final_score(health_as_reward=True))
         test_scores_reward.append(get_final_score(health_as_reward=False))
+        test_scores_exploration.append(len(cells_explored))
 
         if generate_video:
             save_video("./example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
 
-    return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward), actions_taken
+    return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward), np.array(test_scores_exploration), actions_taken
 
 
 def export_video(epoch):
@@ -1413,6 +1434,7 @@ def train_agent(continue_from_save=False):
     results["test_scores_health"] = []
     results["test_scores_reward"] = []
     results["test_scores_mean"] = []
+    results["test_scores_exploration"] = []
     results["test_actions"] = []
     results["config"] = config
     results["args"] = config.args
@@ -1525,7 +1547,7 @@ def train_agent(continue_from_save=False):
             export_video(epoch+1)
 
         logging.info("Testing...")
-        test_scores, test_scores_health, test_scores_reward, actions_taken = eval_model()
+        test_scores, test_scores_health, test_scores_reward, test_scores_exploration, actions_taken = eval_model()
 
         # -----------------------------------------------------------------------------
         # logging...
@@ -1562,6 +1584,7 @@ def train_agent(continue_from_save=False):
         results["test_scores"].append(test_scores)
         results["test_scores_health"].append(test_scores_health)
         results["test_scores_reward"].append(test_scores_reward)
+        results["test_scores_exploration"].append(test_scores_exploration)
         results["test_actions"].append(actions_taken)
 
         elapsed_time = (time() - time_start)
@@ -1576,6 +1599,7 @@ def train_agent(continue_from_save=False):
         logging.critical("Estimated remaining time: {:.0f} min ({:.2f}h total)".format(est_remaining_time/60, est_total_time/60/60))
 
         logging.critical("Scores: {}".format([round(x,2) for x in results["test_scores_mean"]]))
+        logging.critical("Exploration: {}".format([round(np.mean(x), 2) for x in results["test_scores_exploration"]]))
 
         results["elapsed_time"] = ((time() - time_start) / 60.0)
 
@@ -1794,17 +1818,19 @@ def run_eval():
     results["test_scores_health"] = []
     results["test_scores_reward"] = []
     results["test_scores_mean"] = []
+    results["test_scores_exploration"] = []
     results["test_actions"] = []
     results["config"] = config
     results["args"] = config.args
 
-    test_scores, test_scores_health, test_scores_reward, test_actions = eval_model()
+    test_scores, test_scores_health, test_scores_reward, test_actions, test_scores_exploration = eval_model()
 
     results["test_scores_mean"].append(test_scores.mean())
     results["test_scores"].append(test_scores)
     results["test_scores_health"].append(test_scores_health)
     results["test_scores_reward"].append(test_scores_reward)
     results["test_actions"].append(test_actions)
+    results["test_scores_exploration"].append(test_scores_exploration)
     results["best_epoch"] = best_epoch
 
     logging.critical("Scores: {}".format([round(x, 2) for x in results["test_scores_mean"]]))
@@ -2067,8 +2093,9 @@ if __name__ == '__main__':
     parser.add_argument('--weighted_random_actions', type=str2bool, help="Weights random action sampling by 1/frame_repeat for each action.")
     parser.add_argument('--gate_epoch', type=str_to_int_array, help="list of epochs to test score at.")
     parser.add_argument('--gate_score', type=str_to_float_array, help="list of minimum score at corresponding epoch to pass gate.")
-    parser.add_argument('--gradient_clip', type=str2bool, default=False, help="enable gradient clipping.")
+    parser.add_argument('--gradient_clip', type=float, default=0, help="enable gradient clipping.")
     parser.add_argument('--novelty', type=float, default=0.0, help="novelty reward, 0 to disable.")
+    parser.add_argument('--id_factor', type=float, default=0.0, help="inverse dynamics factor.")
 
     args = parser.parse_args()
 
