@@ -93,7 +93,8 @@ game = None
 game_hq = None      # for video previews
 
 starting_locations = set()
-criterion = nn.MSELoss()
+mse_criterion = nn.MSELoss()
+bce_criterion = nn.BCELoss()
 
 # --------------------------------------------------------
 
@@ -177,8 +178,10 @@ class Config:
         self.gate_epoch = None
         self.gate_score = None
         self.gradient_clip = 0
-        self.novelty = 0.0
-        self.id_factor = 0.0
+        self.exploration_bonus = 0.0
+        self.aux_idm = 0.0
+        self.aux_vae = 0.0
+        self.normalize_loss = False
         # this makes config file loading require vizdoom... which I don't want.
         # self.screen_resolution = vzd.ScreenResolution.RES_160X120
 
@@ -265,7 +268,7 @@ class Config:
                 os.makedirs(os.path.join(self.job_folder, "models"), exist_ok=True)
                 os.makedirs(os.path.join(self.job_folder, "videos"), exist_ok=True)
                 return
-            except e:
+            except Exception as e:
                 error = e
 
         raise e
@@ -523,8 +526,6 @@ def get_net(available_actions_count):
     """ Construct network according to config setting. """
     if config.model == "basic":
         return Net(available_actions_count)
-    elif config.model == "dual":
-        return DualNet(available_actions_count)
     else:
         raise Exception("Invalid model name {}.".format(config.model))
 
@@ -535,44 +536,45 @@ class Net(nn.Module):
     def __init__(self, available_actions_count):
         super(Net, self).__init__()
 
-        self.conv1 = nn.Conv2d(
-            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
-            kernel_size=5,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv2 = nn.Conv2d(
-            32, 32, kernel_size=3,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv3 = nn.Conv2d(
-            32, 64, kernel_size=3,
-            stride=1
-        )
-        self.conv4 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-        # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 7, 1]
-        self.fc1 = nn.Linear(prod(final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
+        self.final_shape = [64, 7, 1]
+
+        # encoder part
+
+        self.conv1 = nn.Conv2d(config.num_channels * config.num_stacks, 32, kernel_size=5, stride=2)
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=3, stride=2)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1)
+        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        self.fc1 = nn.Linear(prod(self.final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
         self.fc2 = nn.Linear(config.hidden_units, available_actions_count)
 
+        # decoder part
+        self.d_fc1 = nn.Linear(config.hidden_units, prod(self.final_shape))
+
+        self.d_conv4 = nn.ConvTranspose2d(32, config.num_channels * config.num_stacks, kernel_size=5, stride=2)
+        self.d_conv3 = nn.ConvTranspose2d(32, 32, kernel_size=3, stride=2)
+        self.d_conv2 = nn.ConvTranspose2d(64, 32, kernel_size=3, stride=1)
+        self.d_conv1 = nn.ConvTranspose2d(64, 64, kernel_size=3, stride=1)
+
+        # idm part
         self.pa = nn.Linear(config.hidden_units*2, available_actions_count)
 
         self.num_actions = available_actions_count
 
-    def hidden(self, x, d):
+    def reconstruct(self, s, d):
+        """ reconstructs observation by sending it through the autoencoder. """
+        return self.decode(self.encode(s, d))
+
+    def encode(self, x, d):
+        """ Encode observation into feature space. """
+
         x = x.to(config.device)  # BxCx120x45
         d = d.to(config.device)  # Bx4x3
 
         x = x.float() / 255  # convert from unit8 to float32 format
 
         x = F.relu(self.conv1(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
         x = F.relu(self.conv2(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
         x = F.max_pool2d(x, kernel_size=[1, 3], padding=0)
         x = F.relu(self.conv3(x))
         x = F.max_pool2d(x, 2, padding=1)
@@ -582,9 +584,24 @@ class Net(nn.Module):
         x = F.leaky_relu(self.fc1(x))
         return x
 
+    def decode(self, embedding):
+        """ Given some feature embedding reconstructs the original observation (excluding data channels). """
+        x = F.relu(self.d_fc1(embedding))
+        x = torch.reshape(x, [-1, *self.final_shape])
+        x = F.relu(self.d_conv1(x))
+        x = F.interpolate(x, scale_factor=2)
+        x = F.relu(self.d_conv2(x))
+        x = F.interpolate(x, size=[20, 20])
+        x = F.relu(self.d_conv3(x))
+        x = self.d_conv4(x)
+        x = x[:,:,:84, :84] # we end up at 85x85 this crops to 84x84
+        x = torch.sigmoid(x) * 255 # convert back to 0..255 values
+
+        return x
+
     def predict_action(self, s1, d1, s2, d2):
-        h1 = self.hidden(s1, d1)
-        h2 = self.hidden(s2, d2)
+        h1 = self.encode(s1, d1)
+        h2 = self.encode(s2, d2)
         pred = torch.sigmoid(self.pa(torch.cat((h1,h2), 1)))
         return pred.cpu()
 
@@ -592,77 +609,40 @@ class Net(nn.Module):
     @track_time_taken
     def forward(self, x, d):
 
-        x = self.hidden(x, d)
+        x = self.encode(x, d)
         x = self.fc2(x)
 
         return x.cpu()
 
+running_value = {}
+running_count = {}
 
-class DualNet(nn.Module):
+def log_value(name, value, alpha=0.99):
+    """ Track a running variable via EMA and print it every so often.
+        Useful for monitoring various values for debugging.
     """
-    Dualing DQN Net.
-    See https://www.freecodecamp.org/news/improvements-in-deep-q-learning-dueling-double-dqn-prioritized-experience-replay-and-fixed-58b130cc5682/
-    """
-    def __init__(self, available_actions_count):
-        super(DualNet, self).__init__()
 
-        self.conv1 = nn.Conv2d(
-            config.num_channels * config.num_stacks, 32,    #3 color channels, 4 previous frames.
-            kernel_size=5,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv2 = nn.Conv2d(
-            32, 32, kernel_size=3,
-            stride=1 if config.max_pool else 2
-        )
-        self.conv3 = nn.Conv2d(
-            32, 64, kernel_size=3,
-            stride=1
-        )
-        self.conv4 = nn.Conv2d(
-            64, 64, kernel_size=3,
-            stride=1
-        )
-        # maxpool and stride have slightly different final shapes.
-        final_shape = [64, 7, 1]
-        self.fc1 = nn.Linear(prod(final_shape) + AUX_INPUTS * config.num_stacks, config.hidden_units)
+    if value is not float:
+        # make sure we have a normal float, not some pytorch variable
+        value = float(value)
 
+    if name not in running_value:
+        running_value[name] = value
+        running_count[name] = 0
 
-        self.fc_v = nn.Linear(config.hidden_units, 1)
-        self.fc_a = nn.Linear(config.hidden_units, available_actions_count)
+    running_value[name] = running_value[name] * alpha + (1-alpha) * value
 
-        self.num_actions = available_actions_count
+    if running_count[name] % 100 == 0:
+        logging.critical("{}: {:.3f}".format(name, running_value[name]))
 
-    @track_time_taken
-    def forward(self, x, d):
+    running_count[name] = running_count[name] + 1
 
-        x = x.to(config.device)   # BxCx120x45
-        d = d.to(config.device)   # Bx4x3
+def get_value(name):
+    """ Returns EMA smoothed running variable. """
+    return running_value[name]
 
-        x = x.float()/255         # convert from unit8 to float32 format
-
-        x = F.relu(self.conv1(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.relu(self.conv2(x))
-        if config.max_pool:
-            x = F.max_pool2d(x, 2, padding=0)
-        x = F.max_pool2d(x, kernel_size=[1,3], padding=0)
-        x = F.relu(self.conv3(x))
-        x = F.max_pool2d(x, 2, padding=1)
-        x = F.relu(self.conv4(x))
-        x = x.view(-1, prod(x.shape[1:])) # Bx352
-        x = torch.cat((x, d), 1)  # Bx355
-        x = F.leaky_relu(self.fc1(x))
-
-        a = self.fc_a(x)
-        v = self.fc_v(x).expand(x.size(0), self.num_actions)
-
-        x = v + a - a.mean(1).unsqueeze(1).expand(x.size(0), self.num_actions)
-
-
-        return x.cpu()
-
+# stub
+learn_counter = 0
 
 def learn(s1, d1, s2, d2, a, target_q):
     s1 = torch.from_numpy(s1)
@@ -672,19 +652,61 @@ def learn(s1, d1, s2, d2, a, target_q):
 
     optimizer.zero_grad()
     output = policy_model(s1, d1)
-    loss = criterion(output, target_q)
 
-    if config.id_factor != 0 and s2 is not None:
+    # loss from q_learning
+
+    loss_q = mse_criterion(output, target_q)
+    loss_idm = 0
+    loss_vae = 0
+    log_value("Loss (Q)", loss_q)
+
+    # loss from inverse dynamics model
+    if config.aux_idm != 0 and s2 is not None:
+
+        # baselines
+        # initial network           = 0.690
+        # always 0                  = 0.706
+        # always 0.5                = 0.693
+        # always 1                  = 0.693
+        # uniform random [0..1]     = 0.692
+        # after a little training...= 0.2 ??
+
         s2 = Variable(torch.from_numpy(s2))
         d2 = torch.from_numpy(d2)
+
         one_hot_actions = torch.from_numpy(np.float32([action_id_to_list(x) for x in a]))
+
         pred = policy_model.predict_action(s1, d1*0, s2, d2*0) # data has action information in it...
 
-        id_loss = config.id_factor * criterion(pred, one_hot_actions)
+        # we're looking at loss on n-hot vector where variables are bernoulli
+        loss_idm = bce_criterion(pred, one_hot_actions)
+        log_value("Loss (ID)", loss_idm)
 
-        #print("loss was:  {} added is: {}".format(loss, id_loss))
+    if config.aux_vae != 0:
 
-        loss += id_loss
+        # reconstruction loss baselines:
+        # initial network           =
+        # always 0                  = 0.076
+        # always 0.5                = 0.078
+        # uniform random [0..1]     = 0.159
+        # a little training         = 0.003
+
+        reconstruction = policy_model.reconstruct(s1, d1)
+
+        # calculate loss with pixel values normalized.
+        loss_vae = mse_criterion(reconstruction / 255.0, s1.float() / 255.0)
+        log_value("Loss (AE)", loss_vae)
+
+    # put loss together
+    if config.normalize_loss:
+
+        loss = loss_q / get_value("Loss (Q)")
+        if config.aux_idm:
+            loss = loss + loss_idm * config.aux_idm / get_value("Loss (ID)")
+        if config.aux_vae:
+            loss = loss + loss_vae * config.aux_vae / get_value("Loss (AE)")
+    else:
+        loss = loss_q + loss_idm * config.aux_idm + loss_vae * config.aux_vae
 
     loss.backward()
 
@@ -717,7 +739,7 @@ def get_target_q_values(s,d):
 def get_hidden(s, d):
     s = Variable(torch.from_numpy(s))
     d = Variable(torch.from_numpy(d))
-    h = target_model.hidden(s, d).cpu()
+    h = target_model.encode(s, d).cpu()
     return h
 
 def get_best_action(s,d):
@@ -895,7 +917,7 @@ def perform_environment_step(step):
         s2, d2 = get_obs()
 
     # calculate the novelty - note we do this here, not once in the memory.
-    if config.novelty != 0:
+    if config.exploration_bonus != 0:
         h = get_hidden(*get_stack()).detach()[0]
         nov = feature_cache.get_novelty(h)
 
@@ -906,7 +928,7 @@ def perform_environment_step(step):
         if randint(0, 9) == 0:
             feature_cache.add_novelty_sample(h)
 
-        novelty_reward = config.novelty * nov
+        novelty_reward = config.exploration_bonus * nov
         reward += novelty_reward
 
     memory.add_transition(s1, d1, a, s2, d2, isterminal, reward)
@@ -950,6 +972,19 @@ def initialize_vizdoom():
     initialize_actions(config.frame_repeat, verbose=True)
 
     logging.info("Doom initialized.")
+
+
+def export_image(file_name, x):
+    """
+    :param file_name:
+    :param x: Input is channels, y, x
+    :return:
+    """
+    x = np.swapaxes(x, 0, 2)
+    plt.figure(figsize=(8,8))
+    plt.imshow(x)
+    plt.savefig(file_name)
+    plt.close()
 
 
 def initialize_actions(base_skip, verbose=False):
@@ -1285,8 +1320,17 @@ def eval_model(generate_video=False):
 
             if not game.is_episode_finished():
                 img = game.get_state().screen_buffer
+
+                im_width, im_height = (480, 640)
+
+                # add reconstruction to right hand side.
+                if config.aux_vae:
+                    reconstructed_image = policy_model.reconstruct(s1,d1)
+                    img = np.concatenate((img, reconstructed_image), axis=1)
+                    im_width *= 2
+
                 img = np.swapaxes(img, 0, 2)
-                img = cv2.resize(np.float32(img) / 255, dsize=(480,640), interpolation=cv2.INTER_NEAREST)
+                img = cv2.resize(np.float32(img) / 255, dsize=(im_height, im_width), interpolation=cv2.INTER_NEAREST)
                 img = np.swapaxes(img, 0, 2)
                 img = np.uint8(img * 255)
                 if generate_video:
@@ -2075,7 +2119,6 @@ if __name__ == '__main__':
     parser.add_argument('--include_aux_rewards', type=str2bool, help="use auxualry reward during training (these are not counted during evaluation).")
     parser.add_argument('--export_video', type=str2bool, help="exports one video per epoch showing agents performance.")
     parser.add_argument('--job_id', type=str, help="unique id for job.")
-    parser.add_argument('--max_pool', type=str2bool, help="enable maxpooling.")
     parser.add_argument('--terminate_early', type=str2bool, help="agent stops training if progress has not been made.")
     parser.add_argument('--agent_mode', type=str, help="default | random | stationary")
     parser.add_argument('--rand_seed', type=int, help="random seed for environment initialization")
@@ -2094,8 +2137,13 @@ if __name__ == '__main__':
     parser.add_argument('--gate_epoch', type=str_to_int_array, help="list of epochs to test score at.")
     parser.add_argument('--gate_score', type=str_to_float_array, help="list of minimum score at corresponding epoch to pass gate.")
     parser.add_argument('--gradient_clip', type=float, default=0, help="enable gradient clipping.")
-    parser.add_argument('--novelty', type=float, default=0.0, help="novelty reward, 0 to disable.")
-    parser.add_argument('--id_factor', type=float, default=0.0, help="inverse dynamics factor.")
+    parser.add_argument('--exploration_bonus', type=float, default=0.0, help="bonus given for exploring 'novel' states, 0 to disable.")
+    parser.add_argument('--normalize_loss', type=str2bool, default=False,
+                        help="All losses are normalized such that they average around 1.0 over time.")
+    parser.add_argument('--aux_idm', type=float, default=0.0,
+                        help="loss for learning auxiliary inverse dynamics model task.")
+    parser.add_argument('--aux_vae', type=float, default=0.0,
+                        help="loss for learning auxiliary variational autoencoder task.")
 
     args = parser.parse_args()
 

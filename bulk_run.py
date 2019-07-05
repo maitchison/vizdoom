@@ -592,8 +592,8 @@ elif args.trial == "dynamic_hgs":
 # --------------------------------------------------------------------------------------------------
 
 elif args.trial == "wh_explore":
-    for id_factor in [100, 10, 1, 0]:
-        for novelty in [10, 1, 0]:
+    for id_factor in [1000, 100, 10, 1, 0 -1]:
+        for novelty in [100, 10, 1, 0.1, 0, -1]:
             jobs.append(
                 ("wh novelty={} id_factor={}".format(novelty, id_factor), {
                 'num_stacks':               4,
@@ -624,9 +624,9 @@ elif args.trial == "wh_explore":
                 }))
 
 
-elif args.trial == "hgs_novelty":
-    for id_factor in [100, 10, 1, 0]:
-        for novelty in [10, 1, 0]:
+elif args.trial == "hgs_explore":
+    for id_factor in [1000, 100, 10, 1, 0.1, 0, -1]:
+        for novelty in [100, 10, 1, 0.1, 0, -0.1, -1]:
 
             # pick random parameters
             jobs.append(
@@ -636,7 +636,7 @@ elif args.trial == "hgs_novelty":
                 'replay_memory_size':       20000,
                 'target_update':            100,
                 'hidden_units':             256,
-                'learning_rate':            3e-5,
+                'learning_rate':            1e-4,
                 'max_pool':                 False,
                 'use_color':                True,
                 'include_xy':               False,
