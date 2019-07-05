@@ -586,6 +586,9 @@ class Net(nn.Module):
 
     def decode(self, embedding):
         """ Given some feature embedding reconstructs the original observation (excluding data channels). """
+
+        embedding = embedding.to(config.device)
+
         x = F.relu(self.d_fc1(embedding))
         x = torch.reshape(x, [-1, *self.final_shape])
         x = F.relu(self.d_conv1(x))
@@ -695,7 +698,7 @@ def learn(s1, d1, s2, d2, a, target_q):
 
         # calculate loss with pixel values normalized.
         # shame to have to put reconstruction back on CPU, but otherwise we get an error.
-        loss_vae = mse_criterion(reconstruction.cpu() / 255.0, s1.float() / 255.0)
+        loss_vae = mse_criterion(reconstruction.cpu() / 255.0, s1.float().cpu() / 255.0)
         log_value("Loss (AE)", loss_vae)
 
     # put loss together
@@ -1321,16 +1324,21 @@ def eval_model(generate_video=False):
 
             if not game.is_episode_finished():
                 img = game.get_state().screen_buffer
+                img = np.swapaxes(img, 0, 2)
 
                 im_width, im_height = (480, 640)
 
                 # add reconstruction to right hand side.
                 if config.aux_vae:
-                    reconstructed_image = policy_model.reconstruct(s1,d1)
-                    img = np.concatenate((img, reconstructed_image), axis=1)
+                    # get a copy of our state...
+                    reconstructed_image = policy_model.reconstruct(Variable(torch.from_numpy(s1)),Variable(torch.from_numpy(d1))).detach().cpu().numpy()
+                    reconstructed_image = reconstructed_image[0]
+                    reconstructed_image = np.swapaxes(reconstructed_image, 0, 2)
+                    # resize image...
+                    reconstructed_image = cv2.resize(reconstructed_image, dsize=(img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+                    img = np.concatenate((img, reconstructed_image), axis=0)
                     im_width *= 2
 
-                img = np.swapaxes(img, 0, 2)
                 img = cv2.resize(np.float32(img) / 255, dsize=(im_height, im_width), interpolation=cv2.INTER_NEAREST)
                 img = np.swapaxes(img, 0, 2)
                 img = np.uint8(img * 255)
@@ -1380,7 +1388,34 @@ def export_video(epoch):
 
         # we generate all frames for smooth video, even though
         # actions may stick for multiple frames.
-        frames.append(game.get_state().screen_buffer)
+
+        if config.aux_vae:
+            img = game.get_state().screen_buffer
+            img = np.swapaxes(img, 0, 2)
+
+            im_width, im_height = (640, 480)
+
+            # add reconstruction to right hand side.
+            if config.aux_vae:
+                # get a copy of our state...
+                reconstructed_image = policy_model.reconstruct(Variable(torch.from_numpy(s)),
+                                                               Variable(torch.from_numpy(d))).detach().cpu().numpy()
+                reconstructed_image = reconstructed_image[0]
+                reconstructed_image = np.swapaxes(reconstructed_image, 0, 2)
+                reconstructed_image = np.swapaxes(reconstructed_image, 0, 1)
+                # resize image...
+                reconstructed_image = cv2.resize(reconstructed_image, dsize=(img.shape[1], img.shape[0]),
+                                                 interpolation=cv2.INTER_NEAREST)
+                img = np.concatenate((img, reconstructed_image), axis=0)
+                im_width *= 2
+
+            img = cv2.resize(np.float32(img) / 255, dsize=(im_height, im_width), interpolation=cv2.INTER_NEAREST)
+            img = np.swapaxes(img, 0, 2)
+            img = np.uint8(img * 255)
+            frames.append(img)
+
+        else:
+            frames.append(game.get_state().screen_buffer)
 
         # show how long before next decision
         frames[-1][:, 9:20, 10:10 + frame_repeat_cooldown] = 255
