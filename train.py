@@ -694,7 +694,8 @@ def learn(s1, d1, s2, d2, a, target_q):
         reconstruction = policy_model.reconstruct(s1, d1)
 
         # calculate loss with pixel values normalized.
-        loss_vae = mse_criterion(reconstruction / 255.0, s1.float() / 255.0)
+        # shame to have to put reconstruction back on CPU, but otherwise we get an error.
+        loss_vae = mse_criterion(reconstruction.cpu() / 255.0, s1.float() / 255.0)
         log_value("Loss (AE)", loss_vae)
 
     # put loss together
