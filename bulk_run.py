@@ -695,39 +695,42 @@ elif args.trial == "normalization":
 
 
 elif args.trial == "wh_explore":
-    for id_factor in [1000, 100, 10, 1, 0 -1]:
-        for novelty in [100, 10, 1, 0.1, 0, -1]:
-            jobs.append(
-                ("wh novelty={} id_factor={}".format(novelty, id_factor), {
-                'num_stacks':               4,
-                'discount_factor':          0.95,
-                'replay_memory_size':       10000,
-                'target_update':            300,
-                'hidden_units':             256,
-                'learning_rate':            3e-5,
-                'max_pool':                 False,
-                'use_color':                True,
-                'include_xy':               False,
-                'end_eps':                  0.01,
-                'weight_decay':             0,
-                'optimizer':                "rmsprop",
-                'max_simultaneous_actions': 2,
-                'config_file_path': "scenarios/my_way_home.cfg",
-                'frame_repeat':             10,
-                'learning_steps_per_epoch': 10000,
-                'test_episodes_per_epoch':  100,
-                'update_every':             4,
-                'epochs':                   100,
-                'batch_size':               32,
-                'health_as_reward':         False,
-                'include_aux_rewards':      False,      # change in health should be enough.
-                'terminate_early':          False,
-                'novelty':                  novelty,
-                'id_factor':                id_factor,
-                }))
+    for exploration_bonus in [10, 1, 0]:
+        for aux_idm in [1, 0, 0.1]:
+            for aux_vae in [1, 0, 0.1]:
+                for learning_rate in [3e-5, 1e-4, 3e-4]:
+                    jobs.append(
+                        ("wh eb={} idm={} vae={}".format(exploration_bonus, aux_idm, aux_vae), {
+                        'num_stacks':               4,
+                        'discount_factor':          0.95,
+                        'replay_memory_size':       10000,
+                        'target_update':            300,
+                        'hidden_units':             256,
+                        'learning_rate':            learning_rate,
+                        'use_color':                True,
+                        'include_xy':               False,
+                        'end_eps':                  0.01,
+                        'weight_decay':             0,
+                        'optimizer':                "rmsprop",
+                        'max_simultaneous_actions': 2,
+                        'config_file_path': "scenarios/my_way_home.cfg",
+                        'frame_repeat':             10,
+                        'learning_steps_per_epoch': 10000,
+                        'test_episodes_per_epoch':  100,
+                        'update_every':             4,
+                        'epochs':                   100,
+                        'batch_size':               32,
+                        'health_as_reward':         False,
+                        'include_aux_rewards':      False,
+                        'terminate_early':          False,
+                        'exploration_bonus':        exploration_bonus,
+                        'aux_idm':                  aux_idm,
+                        'aux_vae':                  aux_vae,
+                        }))
 
 
 elif args.trial == "hgs_explore":
+    # todo: redo this one...
     for id_factor in [1000, 100, 10, 1, 0.1, 0, -1]:
         for novelty in [100, 10, 1, 0.1, 0, -0.1, -1]:
 
