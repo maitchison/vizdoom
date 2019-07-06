@@ -640,9 +640,6 @@ def get_value(name):
     """ Returns EMA smoothed running variable. """
     return running_value[name]
 
-# stub
-learn_counter = 0
-
 def learn(s1, d1, s2, d2, a, target_q):
     s1 = torch.from_numpy(s1)
     d1 = torch.from_numpy(d1)
@@ -1269,7 +1266,7 @@ def convert_frame_repeat(code):
     return repeat
 
 
-def eval_model(generate_video=False):
+def eval_model():
 
     policy_model.eval()
     test_scores = []
@@ -1318,38 +1315,12 @@ def eval_model(generate_video=False):
 
             health_history.append(game.get_game_variable(vzd.GameVariable.HEALTH))
 
-            if not game.is_episode_finished():
-                img = game.get_state().screen_buffer
-                img = np.swapaxes(img, 0, 2)
-
-                im_width, im_height = (480, 640)
-
-                # add reconstruction to right hand side.
-                if config.aux_vae:
-                    # get a copy of our state...
-                    reconstructed_image = policy_model.reconstruct(Variable(torch.from_numpy(s1)),Variable(torch.from_numpy(d1))).detach().cpu().numpy()
-                    reconstructed_image = reconstructed_image[0]
-                    reconstructed_image = np.swapaxes(reconstructed_image, 0, 2)
-                    # resize image...
-                    reconstructed_image = cv2.resize(reconstructed_image, dsize=(img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
-                    img = np.concatenate((img, reconstructed_image), axis=0)
-                    im_width *= 2
-
-                img = cv2.resize(np.float32(img) / 255, dsize=(im_height, im_width), interpolation=cv2.INTER_NEAREST)
-                img = np.swapaxes(img, 0, 2)
-                img = np.uint8(img * 255)
-                if generate_video:
-                    frames.append(img)
-
         # make sure to record both the reward score, and the health as reward score.
         test_scores.append(get_final_score())
         actions_taken.append(actions_this_episode[:])
         test_scores_health.append(get_final_score(health_as_reward=True))
         test_scores_reward.append(get_final_score(health_as_reward=False))
         test_scores_exploration.append(len(cells_explored))
-
-        if generate_video:
-            save_video("./example-{}-{}-{}.mp4".format(config.job_id, test_episode, platform.node()), frames, frame_rate=6)
 
     return np.array(test_scores), np.array(test_scores_health), np.array(test_scores_reward), np.array(test_scores_exploration), actions_taken
 
@@ -1399,9 +1370,15 @@ def export_video(epoch):
                 reconstructed_image = reconstructed_image[0]
                 reconstructed_image = np.swapaxes(reconstructed_image, 0, 2)
                 reconstructed_image = np.swapaxes(reconstructed_image, 0, 1)
+
+                # if we use multiple stacks we will reconstruct all of them (for some reason... probably this is not idea right?
+                # anyway, we need only the last stack here.
+                reconstructed_image = reconstructed_image[:,:,:config.num_channels]
+
                 # resize image...
                 reconstructed_image = cv2.resize(reconstructed_image, dsize=(img.shape[1], img.shape[0]),
                                                  interpolation=cv2.INTER_NEAREST)
+
                 img = np.concatenate((img, reconstructed_image), axis=0)
                 im_width *= 2
 
