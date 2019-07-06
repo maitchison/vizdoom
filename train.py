@@ -634,10 +634,6 @@ def log_value(name, value, alpha=0.99):
         running_count[name] = 0
 
     running_value[name] = running_value[name] * alpha + (1-alpha) * value
-
-    if running_count[name] % 100 == 0:
-        logging.critical("{}: {:.3f}".format(name, running_value[name]))
-
     running_count[name] = running_count[name] + 1
 
 def get_value(name):
@@ -1516,6 +1512,7 @@ def train_agent(continue_from_save=False):
     results["test_scores_mean"] = []
     results["test_scores_exploration"] = []
     results["test_actions"] = []
+    results["log"] = {}
     results["config"] = config
     results["args"] = config.args
 
@@ -1670,6 +1667,13 @@ def train_agent(continue_from_save=False):
         elapsed_time = (time() - time_start)
 
         logging.info("\tTotal elapsed time: {:.2f} min".format(elapsed_time / 60.0))
+
+        for variable_name in running_value.keys():
+            if variable_name  not in results["log"]:
+                results["log"][variable_name ] = []
+            value = get_value(variable_name)
+            results["log"][variable_name].append((elapsed_time, epoch, value))
+            logging.critical("{}: {:.3f}".format(variable_name, value))
 
         progress = ((epoch+1) / config.epochs)
 
