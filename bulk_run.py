@@ -588,7 +588,8 @@ elif args.trial == "dynamic_hgs":
 
 
 elif args.trial == "hgs_walltime":
-    for update_every in [1, 2, 1/2, 4, 1/4, 6, 1/6, 8, 1/8]:
+    #for update_every in [1, 2, 1/2, 4, 1/4, 6, 1/6, 8, 1/8]:
+    for update_every in [3,4, 6, 16, 32]:
         for k in [round(x,6) for x in np.linspace(2, -2, 11)] :
 
             # env step takes 0.5ms
