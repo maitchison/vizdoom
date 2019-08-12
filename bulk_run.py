@@ -631,12 +631,6 @@ elif args.trial == "hgs_walltime":
                 'terminate_early':          False
                 }))
 
-
-
-# --------------------------------------------------------------------------------------------------
-# Running
-# --------------------------------------------------------------------------------------------------
-
 elif args.trial == "normalization":
     for learning_rate in [1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3]:
 
@@ -695,13 +689,19 @@ elif args.trial == "normalization":
             }))
 
 
+# --------------------------------------------------------------------------------------------------
+# Running
+# --------------------------------------------------------------------------------------------------
+
+
+
 elif args.trial == "wh_explore":
     for exploration_bonus in [10, 1, 0]:
         for aux_idm in [1, 0, 0.1]:
             for aux_vae in [1, 0, 0.1]:
                 for learning_rate in [3e-5, 1e-4, 3e-4]:
                     jobs.append(
-                        ("wh eb={} idm={} vae={}".format(exploration_bonus, aux_idm, aux_vae), {
+                        ("wh eb={} idm={} vae={} lr={}".format(exploration_bonus, aux_idm, aux_vae, learning_rate), {
                         'num_stacks':               4,
                         'discount_factor':          0.95,
                         'replay_memory_size':       10000,
@@ -724,6 +724,7 @@ elif args.trial == "wh_explore":
                         'health_as_reward':         False,
                         'include_aux_rewards':      False,
                         'terminate_early':          False,
+                        'normalize_loss':           True,
                         'exploration_bonus':        exploration_bonus,
                         'aux_idm':                  aux_idm,
                         'aux_vae':                  aux_vae,
